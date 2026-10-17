@@ -47,7 +47,7 @@ compact-when-ready is a mod: code that runs with your permissions. It makes no n
 | Agent | Status |
 | :- | :- |
 | Claude Code | the original: a mod, everything above |
-| OpenCode | {{OPENCODE_STATUS}} |
+| OpenCode | a plugin, [ports/opencode](ports/opencode). Tested live on OpenCode 1.19.0 under `opencode serve` with a free model; a bare `opencode run` exits before the compaction, and the TUI is not tested yet |
 | Gemini CLI | {{GEMINI_STATUS}} |
 | Codex, Cursor | partial at best: their hooks can continue a session but cannot start a compaction |
 | Windsurf | not possible today: no hook can continue a session or see context use |
