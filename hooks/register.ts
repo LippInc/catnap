@@ -1,56 +1,79 @@
 import type { PluginOptions, Register, Timer } from 'claude-code'
 
-// self-compact: Claude compacts its own conversation at a clean break, then carries on by itself.
+// compact-when-ready: Claude compacts its own conversation at a clean break, then carries on by itself.
 // Two lines on the context window:
 // - SOFT (soft_percent, 50 by default): one note on a tool result: plan a compaction at a comfortable moment, i.e.
 //   finish the piece you are on properly (a page, a section), start nothing big, then save, compact_now and end the turn.
 // - STRICT (strict_percent, 60 by default): the strict note, repeated every REMIND_STEP points: save everything now,
 //   call compact_now and end the turn. If a turn ends past this line without compact_now, the mod asks for it with a
 //   prompt of its own.
+// - AUTO (auto_percent, 70 by default): Claude Code's own auto-compact, the backstop that still compacts mid-turn.
+//   The mod sets CLAUDE_AUTOCOMPACT_PCT_OVERRIDE in its own process to this value (the engine reads the variable at
+//   each check: moved 70->7 and 7->12 at runtime, live 2026-10-17), so the mod's setting wins over one from the
+//   settings files, which stays as the fallback when the mod is off. 0 leaves Claude Code's own setting alone; off
+//   (config.json) or 0 puts back what the process had before the mod first set it (kept in COMPACT_WHEN_READY_AUTO_ORIG,
+//   so a reload still knows it). Only in a person's session, like the notes.
 // "Save" is the save_step option when it is set (a command such as /save-before-compact), else a plain instruction to
 // write a handoff file. When a turn that called compact_now ends, this mod compacts the session and queues a prompt
-// that makes the model continue. Claude Code's own auto-compact stays as the backstop and still compacts mid-turn.
+// that makes the model continue.
 // How it compacts: $.session.compact between turns. A host that refuses that call (the desktop app's Code tab runs the
 //   engine as an SDK session: "not available in a headless (-p / SDK) session", seen live 2026-10-13) gets a
 //   /compact run through $.command.run instead (also after FALLBACK_AFTER refusals of any kind; a plugin's prompt may
 //   not begin with /); the session.compact hook, or else the command's end, marks it landed and the continue follows.
 //   If neither works the mod gives up for the cycle: a toast, the queued state cleared, no notes or asks until a
 //   compaction lands some other way (auto-compact, a typed /compact).
+// A compaction the mod did not run (auto-compact, a typed /compact) starts the note cycle over. The session.compact
+//   hook reports it, except where Claude Code's built-in sec-default mod is seated (managed settings, or a Team or
+//   Enterprise organization), which holds that hook back from a person's mods since 2.1.299
+//   (anthropics/claude-code#102134). The fallback: context that falls DROP_POINTS or more between two checks, with no
+//   compaction of the mod's own queued or running, was compacted some other way.
 //
-// State folder = <state>/self-compact, <state> = CLAUDE_STATE_DIR, else ~/.claude/state.
-// Config: the userConfig options (soft_percent, strict_percent, save_step), then config.json in the state folder
-//   ({"soft": 50, "threshold": 60, "off": false}, re-read on every check, no reload needed), then a per-session
-//   <session id>.config.json beside it; each later one wins. A soft line at or above the strict line is off.
+// State folder = <state>/compact-when-ready, <state> = CLAUDE_STATE_DIR, else ~/.claude/state.
+// Config: the userConfig options (soft_percent, strict_percent, auto_percent, save_step), then config.json in the state
+//   folder ({"soft": 50, "threshold": 60, "auto": 70, "off": false}, re-read on every check, no reload needed), then a
+//   per-session <session id>.config.json beside it; each later one wins. A soft line at or above the strict line is off;
+//   an auto line at or below the strict line gets one toast, since auto-compact then runs before the mod can ask.
 // Pending flag: <session id>.json = {"pending": true, ...}. A Stop hook of yours that keeps a turn going should stay
 //   silent while it is fresh, so the turn really ends and the compaction can run.
-// Log: <session id>.log.json, the last 60 events; written only for sessions that draw or did something.
-// Acts only where something draws (the app or a terminal): a plain -p run is untouched, and so is any process with
-//   SELF_COMPACT_OFF set (or the author's wrapper markers CLAUDE_DELEGATE_LEG / CLAUDE_HARNESS_PROBE).
+// Log: <session id>.log.json, the last 60 events; written only for a person's session or one that did something.
+// Acts only in a person's session: one where something draws (a terminal), or a desktop app chat. The app runs the
+//   engine as an SDK session whose surface list is empty until a window attaches and can empty again mid-turn (a long
+//   turn there crossed 50% and 60% with no note, live 2026-10-17), so its chats are known by CLAUDE_CODE_ENTRYPOINT =
+//   claude-desktop instead. A `claude -p` started from inside such a chat inherits that entry point, but also CLAUDECODE
+//   and CLAUDE_CODE_CHILD_SESSION, which the engine sets only for the processes it starts (its own nested-session
+//   test); with either one set it is not a person's session. A plain -p run is untouched, and so is any process with
+//   COMPACT_WHEN_READY_OFF set (or the author's wrapper markers CLAUDE_DELEGATE_LEG / CLAUDE_HARNESS_PROBE).
 // Deferred work (the compaction, the prompts) runs on one timer started in session.start: $ is only ever spelled at
 // its call site inside a hook, so the deferred steps are flags this timer picks up.
 
 const TOOL = 'compact_now'
 const DEFAULT_SOFT = 50
 const DEFAULT_THRESHOLD = 60
+const DEFAULT_AUTO = 70
 const REMIND_STEP = 2 // percentage points between repeated mid-turn notes
 const ASK_STEP = 5 // percentage points before an ignored turn-end ask is repeated
 const TICK_MS = 1500 // how often the timer looks for deferred work
 const FALLBACK_AFTER = 3 // direct compactions refused in a row before /compact is run instead
 const SLASH_TIMEOUT_MS = 10 * 60_000 // a /compact run that has not landed by then is given up on
+// a fall this big between two checks is a compaction: a cycle only has state from the soft line (50%) on, and a
+// compaction leaves a few percent (live: 257K->29K, 531K->28K, 66K->7K tokens; on 2.1.302 an auto-compact went from
+// 38% to 8% at the next check, the messages it keeps included), while plain work only adds context
+const DROP_POINTS = 20
 // $.session.compact's refusal where only a /compact run can compact (the desktop app, live 2026-10-13)
 export const isHeadlessRefusal = (err: unknown) => /not available in a headless/i.test(String(err))
 
-type Config = { soft: number; threshold: number; off: boolean }
+type Config = { soft: number; threshold: number; auto: number; off: boolean }
 type Job = { handoff: string; keep: string; percent: number }
 
 export const stateDirFor = (stateEnv: string | undefined, home: string | undefined): string => {
   const base = stateEnv || (home ? `${home}/.claude/state` : '')
-  return base ? `${base.split('\\').join('/').replace(/\/+$/, '')}/self-compact` : ''
+  return base ? `${base.split('\\').join('/').replace(/\/+$/, '')}/compact-when-ready` : ''
 }
 
-const percentOption = (v: unknown, fallback: number): number => {
+// A line in percent: above 0 and below 100 (lowest = 0 for the auto line, where 0 means "leave it alone").
+const percentOption = (v: unknown, fallback: number, lowest = 1): number => {
   const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN
-  return Number.isFinite(n) && n > 0 && n < 100 ? n : fallback
+  return Number.isFinite(n) && n >= lowest && n < 100 ? n : fallback
 }
 
 // The userConfig options as the base config, and the save step (empty: a plain "write a handoff file").
@@ -58,19 +81,21 @@ export const fromOptions = (options: PluginOptions | undefined): { base: Config;
   base: {
     soft: percentOption(options?.soft_percent, DEFAULT_SOFT),
     threshold: percentOption(options?.strict_percent, DEFAULT_THRESHOLD),
+    auto: percentOption(options?.auto_percent, DEFAULT_AUTO, 0),
     off: false,
   },
   save: typeof options?.save_step === 'string' ? options.save_step.trim() : '',
 })
 
 export const parseConfig = (texts: readonly (string | null)[], base?: Config): Config => {
-  const c: Config = base ? { ...base } : { soft: DEFAULT_SOFT, threshold: DEFAULT_THRESHOLD, off: false }
+  const c: Config = base ? { ...base } : { soft: DEFAULT_SOFT, threshold: DEFAULT_THRESHOLD, auto: DEFAULT_AUTO, off: false }
   for (const text of texts) {
     if (!text) continue
     try {
-      const j = JSON.parse(text) as { soft?: unknown; threshold?: unknown; off?: unknown } | null
+      const j = JSON.parse(text) as { soft?: unknown; threshold?: unknown; auto?: unknown; off?: unknown } | null
       if (typeof j?.soft === 'number' && j.soft > 0 && j.soft < 100) c.soft = j.soft
       if (typeof j?.threshold === 'number' && j.threshold > 0 && j.threshold < 100) c.threshold = j.threshold
+      if (typeof j?.auto === 'number' && j.auto >= 0 && j.auto < 100) c.auto = j.auto
       if (typeof j?.off === 'boolean') c.off = j.off
     } catch {
       // a broken config file is ignored, the defaults stand
@@ -78,6 +103,11 @@ export const parseConfig = (texts: readonly (string | null)[], base?: Config): C
   }
   return c
 }
+
+// What CLAUDE_AUTOCOMPACT_PCT_OVERRIDE should hold under this config: the auto line, or, when the mod is off or the
+// line is 0, what the process had before the mod first set it ('' = it was unset).
+export const autoTarget = (c: Config, orig: string): { value: string | undefined; restore: boolean } =>
+  c.off || c.auto === 0 ? { value: orig === '' ? undefined : orig, restore: true } : { value: String(c.auto), restore: false }
 
 // How to save, in the notes: the save_step command when one is set, else a plain handoff file.
 const saveHow = (save: string): string =>
@@ -97,23 +127,23 @@ const steps = (tool: string, save: string): string =>
 
 export const softText = (p: number, t: number, tool: string, save = '') =>
   [
-    `[self-compact] Context is at ${p}% of the window. Compact at a comfortable moment before ${t}%, where you will be told to compact at once:`,
+    `[compact-when-ready] Context is at ${p}% of the window. Compact at a comfortable moment before ${t}%, where you will be told to compact at once:`,
     '- Finish the piece you are on, and finish it properly (for example the page, section or feature: done, checked, saved). Do not start the next big piece before compacting.',
     `- At that clean break: ${saveShort(save)}, call ${tool} with the handoff file's path and what the summary must keep, then end your reply.`,
     '- If your reply is ending anyway (the work is done, or you are waiting on the user), that is a good moment too.',
   ].join('\n')
 
 export const noteText = (p: number, t: number, tool: string, save = '') =>
-  `[self-compact] Context is at ${p}% of the window (the line is ${t}%). Save and compact now; do not wait for a better moment. In this order:\n${steps(tool, save)}`
+  `[compact-when-ready] Context is at ${p}% of the window (the line is ${t}%). Save and compact now; do not wait for a better moment. In this order:\n${steps(tool, save)}`
 
 export const askText = (p: number, t: number, tool: string, save = '') =>
-  `[self-compact] Your last turn ended with context at ${p}% of the window (the line is ${t}%). Compact before anything else, in this order:\n${steps(tool, save)}`
+  `[compact-when-ready] Your last turn ended with context at ${p}% of the window (the line is ${t}%). Compact before anything else, in this order:\n${steps(tool, save)}`
 
 const QUEUED_NOTE =
-  '[self-compact] Compaction is queued. End your reply now: no more tool calls and no more text. It runs as soon as the turn ends, and a message then tells you to continue.'
+  '[compact-when-ready] Compaction is queued. End your reply now: no more tool calls and no more text. It runs as soon as the turn ends, and a message then tells you to continue.'
 
 const continueText = (job: Job) =>
-  `[self-compact] The conversation was just compacted at your request (context had reached ${job.percent}%). ` +
+  `[compact-when-ready] The conversation was just compacted at your request (context had reached ${job.percent}%). ` +
   `Your handoff: ${job.handoff}. Read it first, then carry on exactly where you left off, with the next step it names. ` +
   'If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work.'
 
@@ -122,15 +152,17 @@ const instructionsFor = (job: Job) =>
 
 export const register: Register = (on, options) => {
   const { base, save } = fromOptions(options)
-  let toolName = `mcp__self-compact__${TOOL}`
+  let toolName = `mcp__compact-when-ready__${TOOL}`
   let stateDir = ''
   let sid = ''
+  let desktopChat = false // a desktop app chat, not a process started from inside one: acts with no window attached
   let pending: Job | null = null // compact_now was called; runs when the turn ends
   let due = false // the turn ended: the timer may compact now
   let ask: string | null = null // a turn-end ask the timer submits
   let softNoted = false // the soft note went out this cycle
   let lastNote = -1 // percent at the last mid-turn note
   let lastAsk = -1 // percent at the last turn-end ask
+  let lastPct = -1 // percent at the last check, for the drop fallback (-1: none since the cycle started)
   let busy = false
   let retries = 0
   let flagDirty = false // the pending flag file needs rewriting
@@ -139,11 +171,17 @@ export const register: Register = (on, options) => {
   let slashAt = 0
   let landedJob: Job | null = null // its compaction landed: the timer sends the continue prompt
   let gaveUp = false // compacting failed this cycle: no notes or asks until a compaction lands some other way
-  let toast: string | null = null // a toast the timer shows
+  let toast: string | null = null // a toast the timer shows (the host puts "compact-when-ready:" in front)
+  let autoOrig = '' // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE before the mod first set it ('' = unset)
+  let autoNow: string | undefined // what the variable holds now
+  let autoTouched = false // the mod (this module or one before a reload) has set the variable
+  let autoWant: { value: string | undefined; restore: boolean } | null = null // what the timer sets it to
+  let autoWarned = false
+  let autoBroken = false // the host refused a write to the variable: stop trying
   let timer: Timer | undefined
   const events: Record<string, unknown>[] = []
   let logDirty = false
-  let logWorthy = false // a session that draws, or did something: only then does its log go to disk
+  let logWorthy = false // a person's session, or one that did something: only then does its log go to disk
 
   const log = (kind: string, data: Record<string, unknown> = {}) => {
     events.push({ at: new Date().toISOString(), kind, ...data })
@@ -162,22 +200,42 @@ export const register: Register = (on, options) => {
     softNoted = false
     lastNote = -1
     lastAsk = -1
+    lastPct = -1 // the mod's own compaction, or one the hook reported, is never seen again as a drop
     retries = 0
     slashJob = null
     gaveUp = false
   }
   const giveUp = (reason: string) => {
     log('gave-up', { reason })
-    toast = `self-compact could not compact this chat (${reason}). The automatic compaction still applies.`
+    toast = `could not compact this chat (${reason}). The automatic compaction still applies.`
     reset()
     gaveUp = true
+  }
+  // The auto line under this config, for the timer to set; one toast when it sits at or below the strict line.
+  const wantAuto = (c: Config) => {
+    autoWant = autoTarget(c, autoOrig)
+    if (autoWant.restore || autoWarned || c.auto > c.threshold) return
+    autoWarned = true
+    log('auto-below-strict', { auto: c.auto, threshold: c.threshold })
+    toast = `auto-compact (${c.auto}%) is at or below the strict line (${c.threshold}%), so it runs before Claude is asked`
+  }
+  // Each check's percent, for the fallback: a fall of DROP_POINTS or more since the last check, with nothing of the
+  // mod's own queued or running, was a compaction the hook did not report. Logged once: the next check compares anew.
+  const sawPercent = (pct: number | undefined) => {
+    if (pct === undefined) return // none until the first response after a compaction: the next check compares
+    const before = lastPct
+    lastPct = pct
+    if (pending || slashJob || before < 0 || pct > before - DROP_POINTS) return
+    reset()
+    lastPct = pct
+    log('compacted-elsewhere', { via: 'drop', from: before, to: pct })
   }
 
   on('session.start', async ($, e, next) => {
     toolName = `mcp__${$.plugin.name}__${TOOL}`
-    // SELF_COMPACT_OFF, or the author's wrapper markers (each name spelled out: the engine lists what a mod reads)
+    // COMPACT_WHEN_READY_OFF, or the author's wrapper markers (each name spelled out: the engine lists what a mod reads)
     const isWrapperChild =
-      (await $.env.get('SELF_COMPACT_OFF')) !== undefined ||
+      (await $.env.get('COMPACT_WHEN_READY_OFF')) !== undefined ||
       (await $.env.get('CLAUDE_DELEGATE_LEG')) !== undefined ||
       (await $.env.get('CLAUDE_HARNESS_PROBE')) !== undefined
     // an empty state folder switches every check off: the tool still answers, nothing is ever injected or asked
@@ -185,6 +243,15 @@ export const register: Register = (on, options) => {
       ? ''
       : stateDirFor(await $.env.get('CLAUDE_STATE_DIR'), (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')))
     sid = await $.session.id()
+    desktopChat =
+      (await $.env.get('CLAUDE_CODE_ENTRYPOINT')) === 'claude-desktop' &&
+      (await $.env.get('CLAUDECODE')) === undefined &&
+      (await $.env.get('CLAUDE_CODE_CHILD_SESSION')) === undefined
+    // the auto line's starting point; after a reload the marker still holds the value from before the mod's first set
+    autoNow = await $.env.get('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE')
+    const marked = await $.env.get('COMPACT_WHEN_READY_AUTO_ORIG')
+    autoTouched = marked !== undefined
+    autoOrig = marked ?? autoNow ?? ''
     if (stateDir) {
       // a reload starts the module over: keep this session's log, and drop a queued flag the old module left behind
       try {
@@ -220,8 +287,10 @@ export const register: Register = (on, options) => {
       isDeferred: false,
     })
     const surfaces = [...(await $.session.surfaces())]
-    if (surfaces.length > 0) logWorthy = true
-    log('start', { surfaces, root: $.plugin.root, stateDir, isWrapperChild })
+    if (surfaces.length > 0 || desktopChat) logWorthy = true
+    log('start', { surfaces, desktopChat, root: $.plugin.root, stateDir, isWrapperChild, autoNow: autoNow ?? null })
+    if (stateDir && (desktopChat || surfaces.length > 0))
+      wantAuto(parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base))
 
     const tick = async () => {
       if (busy) return
@@ -230,6 +299,24 @@ export const register: Register = (on, options) => {
         if (stateDir && flagDirty) {
           flagDirty = false
           await $.fs.write(`${stateDir}/${sid}.json`, flagBody())
+        }
+        const want = autoBroken ? null : autoWant
+        if (want && want.value !== autoNow && (autoTouched || !want.restore)) {
+          try {
+            // the first set keeps what was there, so off or 0 can put it back, also after a reload; since 2.1.302 a
+            // write the engine holds (a session under an organization's settings) resolves { deny } instead of rejecting
+            const kept = autoTouched ? undefined : await $.env.set('COMPACT_WHEN_READY_AUTO_ORIG', autoOrig)
+            if (kept?.deny) throw new Error(kept.deny)
+            const res = await $.env.set('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE', want.value)
+            if (res?.deny) throw new Error(res.deny)
+            autoNow = want.value
+            autoTouched = true
+            log('auto-line', { value: want.value ?? null, restore: want.restore })
+          } catch (err) {
+            // a refused write must not hold up the compaction below: the auto line is dropped for this module
+            autoBroken = true
+            log('auto-line-refused', { error: String(err).slice(0, 200) })
+          }
         }
         if (ask !== null) {
           const text = ask
@@ -247,7 +334,7 @@ export const register: Register = (on, options) => {
               reset()
               if ('skip' in res && res.skip !== undefined) {
                 log('skipped', { reason: res.skip })
-                toast = `self-compact: the compaction was skipped (${res.skip})`
+                toast = `the compaction was skipped (${res.skip})`
               } else {
                 log('compacted', { tokensBefore: res.tokensBefore, tokensAfter: res.tokensAfter })
                 landedJob = job
@@ -338,10 +425,13 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     if (e.agentId || r.deny !== undefined) return r
     if (pending) return { ...r, context: [...(r.context ?? []), QUEUED_NOTE] }
-    if (gaveUp || !stateDir || (await $.session.surfaces()).length === 0) return r
-    const c = parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base)
-    if (c.off) return r
+    if (!stateDir || (!desktopChat && (await $.session.surfaces()).length === 0)) return r
     const pct = (await $.session.usage()).context.percent
+    sawPercent(pct) // before the give-up check: a compaction seen this way also ends a give-up
+    if (gaveUp) return r
+    const c = parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base)
+    wantAuto(c)
+    if (c.off) return r
     if (pct === undefined) return r
     if (pct < c.threshold) {
       // the soft line: one note per cycle, then quiet until the strict line
@@ -370,10 +460,13 @@ export const register: Register = (on, options) => {
       }
       return r
     }
-    if (gaveUp || e.reason !== 'answer' || !stateDir || (await $.session.surfaces()).length === 0) return r
-    const c = parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base)
-    if (c.off) return r
+    if (!stateDir || (!desktopChat && (await $.session.surfaces()).length === 0)) return r
     const pct = (await $.session.usage()).context.percent
+    sawPercent(pct) // an auto-compact inside the turn shows here at the latest
+    if (gaveUp || e.reason !== 'answer') return r
+    const c = parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base)
+    wantAuto(c)
+    if (c.off) return r
     if (pct === undefined || pct < c.threshold) return r
     if (lastAsk >= 0 && pct < lastAsk + ASK_STEP) return r
     lastAsk = pct
@@ -396,7 +489,7 @@ export const register: Register = (on, options) => {
         const reason = 'skip' in r && r.skip !== undefined ? String(r.skip) : 'skipped'
         reset()
         log('skipped', { via: 'prompt', reason })
-        $.ui.toast(`self-compact: the compaction was skipped (${reason})`)
+        $.ui.toast(`the compaction was skipped (${reason})`)
       }
       return r
     }

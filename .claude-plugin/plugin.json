@@ -1,11 +1,11 @@
 {
-  "name": "self-compact",
-  "displayName": "Self-compact",
-  "version": "0.2.0",
-  "description": "Claude compacts its own conversation at a clean break, then carries on by itself. A gentle note at 50% context, a strict one at 60%, and a compact_now tool.",
+  "name": "compact-when-ready",
+  "displayName": "Compact When Ready",
+  "version": "0.3.0",
+  "description": "Claude compacts its own conversation at a clean break, then carries on by itself. A gentle note at 50% context, a strict one at 60%, Claude Code's auto-compact at 70% as the backstop, and a compact_now tool. All three lines are settings.",
   "author": { "name": "Martin Lipp", "url": "https://github.com/LippInc" },
-  "homepage": "https://github.com/LippInc/self-compact",
-  "repository": "https://github.com/LippInc/self-compact",
+  "homepage": "https://github.com/LippInc/compact-when-ready",
+  "repository": "https://github.com/LippInc/compact-when-ready",
   "license": "MIT",
   "keywords": ["compaction", "context", "handoff", "mod"],
   "userConfig": {
@@ -23,6 +23,14 @@
       "description": "From here Claude is told to save and compact now, again every 2 points until it does.",
       "default": 60,
       "min": 1,
+      "max": 99
+    },
+    "auto_percent": {
+      "type": "number",
+      "title": "Auto-compact line (% of context)",
+      "description": "Where Claude Code's own auto-compact runs if Claude has not compacted by then. Keep it above the strict line. 0 leaves Claude Code's own setting alone. Claude Code can only move auto-compact earlier than its default, so values near 100 do nothing.",
+      "default": 70,
+      "min": 0,
       "max": 99
     },
     "save_step": {
