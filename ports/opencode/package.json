@@ -1,0 +1,36 @@
+{
+  "name": "compact-when-ready-opencode",
+  "version": "0.1.0",
+  "description": "OpenCode plugin: the model compacts its own conversation at a clean break, then carries on from a handoff file.",
+  "license": "MIT",
+  "author": "Martin Lipp (LippInc)",
+  "type": "module",
+  "main": "index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "compaction",
+    "context"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --skipLibCheck --types node,bun index.ts test/plugin.test.ts"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.19.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.19.0",
+    "@types/bun": "^1.3.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
