@@ -1,0 +1,6 @@
+{
+  "name": "lippinc",
+  "owner": { "name": "Martin Lipp", "url": "https://github.com/LippInc" },
+  "description": "Claude Code mods by Martin Lipp.",
+  "plugins": [{ "name": "self-compact", "source": "./" }]
+}

@@ -1,0 +1,35 @@
+{
+  "name": "self-compact",
+  "displayName": "Self-compact",
+  "version": "0.2.0",
+  "description": "Claude compacts its own conversation at a clean break, then carries on by itself. A gentle note at 50% context, a strict one at 60%, and a compact_now tool.",
+  "author": { "name": "Martin Lipp", "url": "https://github.com/LippInc" },
+  "homepage": "https://github.com/LippInc/self-compact",
+  "repository": "https://github.com/LippInc/self-compact",
+  "license": "MIT",
+  "keywords": ["compaction", "context", "handoff", "mod"],
+  "userConfig": {
+    "soft_percent": {
+      "type": "number",
+      "title": "Soft line (% of context)",
+      "description": "From here Claude is told once to finish the piece it is on, then save and compact at that clean break. Set it at or above the strict line to turn this note off.",
+      "default": 50,
+      "min": 1,
+      "max": 99
+    },
+    "strict_percent": {
+      "type": "number",
+      "title": "Strict line (% of context)",
+      "description": "From here Claude is told to save and compact now, again every 2 points until it does.",
+      "default": 60,
+      "min": 1,
+      "max": 99
+    },
+    "save_step": {
+      "type": "string",
+      "title": "Save command (optional)",
+      "description": "A command Claude runs to save its work before compacting, such as /save-before-compact. Empty: Claude writes a handoff file itself.",
+      "default": ""
+    }
+  }
+}
