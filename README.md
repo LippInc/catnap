@@ -132,6 +132,10 @@ These are the calls `claude plugin validate .` lists, and what each one is for. 
 
 - [disler/self-compact-pi-agent](https://github.com/disler/self-compact-pi-agent) does the same for the Pi coding agent: the agent watches its own context, writes a note to itself and compacts, at lines you set.
 
+## Privacy
+
+compact-when-ready collects nothing and sends nothing anywhere. It makes no network requests, no model calls of its own and starts no processes, and it has no account, telemetry or analytics. What it keeps stays on your machine, in its own state folder (see [Files it writes](#files-it-writes)). The two prompts it submits go into your own session and hold only the text listed under [What it can reach](#what-it-can-reach).
+
 ## License
 
 MIT, Martin Lipp ([LippInc](https://github.com/LippInc)). Not affiliated with Anthropic. If it misbehaves on your setup, an issue saying what happened is the most useful thing you can send. The session's `.log.json` helps.

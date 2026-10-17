@@ -1,11 +1,15 @@
 {
   "name": "compact-when-ready",
   "displayName": "Compact When Ready",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Claude compacts its own conversation at a clean break, then carries on by itself. A gentle note at 50% context, a strict one at 60%, Claude Code's auto-compact at 70% as the backstop, and a compact_now tool. All three lines are settings.",
   "author": { "name": "Martin Lipp", "url": "https://github.com/LippInc" },
   "homepage": "https://github.com/LippInc/compact-when-ready",
   "repository": "https://github.com/LippInc/compact-when-ready",
+  "documentationUrl": "https://github.com/LippInc/compact-when-ready#readme",
+  "supportUrl": "https://github.com/LippInc/compact-when-ready/issues",
+  "privacyPolicyUrl": "https://github.com/LippInc/compact-when-ready#privacy",
+  "termsOfServiceUrl": "https://github.com/LippInc/compact-when-ready/blob/main/LICENSE",
   "license": "MIT",
   "keywords": ["compaction", "context", "handoff", "mod"],
   "userConfig": {
