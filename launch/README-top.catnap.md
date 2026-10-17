@@ -16,7 +16,7 @@ Claude Code compacts your conversation when the context window fills up, usually
 | | Without catnap | With catnap |
 | :- | :- | :- |
 | When it compacts | when the window is nearly full | when Claude finishes the piece it is on, from 50% |
-| Compactions in the middle of a task | 78 of 82 in the author's last 30 days | none in 5 days of the author's real work (13 of 13 at a moment Claude picked) |
+| Compactions in the middle of a task | 78 of 82 in the author's last 30 days | none in 5 days of the author's own sessions (13 of 13 at a moment Claude picked) |
 | Right after | Claude re-reads files and works out where it was | Claude reads its own note and carries on |
 | Context re-read in long sessions | baseline | **about 30% less**\* |
 
