@@ -51,6 +51,6 @@ Ignoring the one-time compaction reads on both sides: 33.2% and 16.3%.
 
 - One known bias pushes the number up: after a compaction Claude re-reads a few files, and the replay counts that as growth it would also have had without compacting.
 - The replay assumes the session would have gone the same way without the mod (same calls, same growth). Real sessions would differ.
-- The spread is wide: two sessions ended right after their only compaction, so the compaction was pure cost there (-0.1%, -0.2%); long sessions that kept going after compacting saved 35-46%. The total depends on how long sessions run after a compaction.
+- The spread is wide: two sessions ended right after their only compaction, so the compaction was pure cost there (-0.1%, -0.2%); the seven that kept going after compacting saved 21-46%. The total depends on how long sessions run after a compaction.
 - Tokens are counted equally. These are tokens re-read, not plan usage: cache reads weigh less there.
 - One user, nine sessions, one machine. A data point, not a benchmark. Over the author's whole month, short sessions included, `/check` estimates 17.5% (METHOD.md).
