@@ -1,0 +1,24 @@
+# Build spec: "check your own history" script (bench/check.mjs)
+
+## Why
+The mod's effect only shows hours into a long session, so a new visitor can't see it in the first minute. This script gives anyone a personal number in seconds, from their own local Claude Code logs, without installing anything: how often auto-compact cut in mid-task, and roughly how much context they would not have re-read if Claude had compacted itself at a clean break around 50%. It must be honest: an estimate with its method shown, never inflated.
+
+## What it does
+`node bench/check.mjs [--days 30] [--json] [--soft 50] [--auto <pct>]`, Node 18+, zero dependencies, no network, read-only.
+1. Find session transcripts: `~/.claude/projects/*/*.jsonl` (use `os.homedir()`; honour `CLAUDE_CONFIG_DIR` if set), modified in the last N days. Skip `subagents/` folders and records with `isSidechain: true`.
+2. Per session: parse lines, keep assistant records with `message.usage`; DEDUPLICATE by `message.id` (Claude Code re-logs history after compactions; keep the earliest), sort by timestamp. context_t = input_tokens + cache_read_input_tokens + cache_creation_input_tokens. Collect `compact_boundary` records (`subtype`, `compactMetadata.trigger` auto/manual, `compactMetadata.preTokens`, timestamp), deduplicated.
+3. Window per session: 1,000,000 if the model id ends in `[1m]` or any call's context exceeds 200,000, else 200,000 (state this rule in the output's method line).
+4. Mid-task auto-compactions: an auto boundary counts as mid-task when the last assistant call before it had `stop_reason` "tool_use" (Claude was inside a tool loop, not at the end of its turn). Verify on real files that `stop_reason` is present; if it is not, find another honest signal and document it, or report "unknown".
+5. Estimate with a clean-break compaction (the counterfactual): replay each session's growth deltas (d_t = context_t - context_(t-1); across an actual boundary d_t = 0 for the first call after it, so the replay keeps the conversation's own growth). Simulated context c_t; once c_t passes soft% of the window, compact at the first call that ends a turn (`stop_reason` "end_turn"); if none comes before the auto line (default 70%, or the session's own auto point if `--auto` given), compact there (a backstop, counted as mid-task). A simulated compaction resets c_t to the user's own median first-call context after a boundary (fall back to 100,000 if they have no boundaries) and costs one read of the pre-reset context. Actual total A = sum of context_t + one read per actual boundary. Estimated total E = sum of c_t + compaction reads. Saving = 1 - E/A (positive = less re-read with the mod).
+6. Output (plain text, screenshot-friendly, about 12 lines): days scanned, sessions, long sessions (crossed 50% of their window), auto-compactions, of them mid-task, tokens re-read actual vs estimated with clean-break compaction, the saving %, and one method line plus "estimate, see bench/METHOD.md". `--json` prints the same numbers as JSON. Never print transcript text, file names of projects, or paths beyond counts.
+
+## Files you own (write only these)
+`C:/Users/marti/Dev/Claude-tools/cwr-launch/bench/`: `check.mjs`, `METHOD.md` (plain-language method, assumptions, known biases in both directions, how to reproduce), `test/` (node --test fixtures). Do NOT commit; the reviewer commits. Do not touch other folders.
+
+## Checks (each run; each with a planted failure that must make it fail)
+1. Synthetic fixtures (write small .jsonl files under test/fixtures): (a) a session that never passes 50% gives saving exactly 0 and 0 compactions; (b) a session growing linearly past 50% with one end_turn after the line: hand-calculate E and A in METHOD.md and assert the script matches exactly; (c) an auto boundary after a tool_use call is counted mid-task, after an end_turn it is not; (d) duplicated message.id records are counted once. Plant a bug (e.g. drop the dedup, or shift the soft line) and show a test fails.
+2. Run it read-only on this machine's real history (`node bench/check.mjs --days 30`) and record the printed numbers in METHOD.md under "author's own result" (numbers only). Sanity check against C:/Users/marti/Dev/Fable-2/caveman-playbook-2026-10-17/SAVINGS.md (a related replay that found ~33% on the author's mod sessions): the direction and rough size should be comparable for long sessions; explain any big gap.
+3. Runtime on the real history under 30 seconds; memory sane (stream files line by line).
+
+## Rules
+Never print or copy transcript content. Never write outside bench/. No network. Long commands in the background, checked in steps under 4 minutes. Report honestly; an estimate that comes out small is a valid result. Return a summary under 250 words: what it prints, the checks with planted failures, the author's own numbers, open issues.
