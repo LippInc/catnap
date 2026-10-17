@@ -2,7 +2,7 @@
 
 # catnap
 
-**Claude naps at a clean break. Not mid-edit.**
+**Claude naps at a clean break. Not mid-task.**
 
 ```text
 finish the thought.

@@ -68,7 +68,7 @@ The TUI and the desktop app; any model other than the free DeepSeek one; OpenCod
 
 ## After the review fixes (2026-10-17, evening)
 
-What changed in `index.ts` (all unit-tested, see `test/plugin.test.ts`, block "after the review fixes"):
+What changed in `index.ts` (all unit-tested, see `test/plugin.spec.ts`, block "after the review fixes"):
 
 - F1: the continue prompt now carries `body.agent` (taken from `info.agent`, else `info.mode`, of the latest assistant message), so a session in `plan` or a custom read-only agent continues under that agent. Left out when no agent is known.
 - F2: if the newest assistant message ended with an error (for example `MessageAbortedError`, recorded even when the message has 0 tokens), `session.idle` keeps the request queued and logs `idle-after-error`; the next idle after a normal turn compacts.

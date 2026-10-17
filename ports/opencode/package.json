@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --skipLibCheck --types node,bun index.ts test/plugin.test.ts"
+    "typecheck": "tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --skipLibCheck --types node,bun index.ts test/plugin.spec.ts"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": ">=1.19.0"
