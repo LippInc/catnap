@@ -22,7 +22,7 @@ type World = {
 }
 
 // Everything beneath the plugin: the engine's answers, held in memory.
-const world = (on: On, init: Partial<World> = {}, env: Record<string, string> = { USERPROFILE: 'C:\\Users\\tester' }) => {
+const world = (on: On, init: Partial<World> = {}, fixture: Record<string, string> = { USERPROFILE: 'C:\\Users\\tester' }) => {
   const w: World = {
     pct: 10,
     surfaces: ['desktop'],
@@ -38,8 +38,10 @@ const world = (on: On, init: Partial<World> = {}, env: Record<string, string> = 
     ...init,
   }
   const clock = mock.clock(on)
-  // the process environment, read and written (mock.env answers reads only)
-  const vars = new Map(Object.entries(env))
+  // the process environment, read and written (mock.env answers reads only). The starting record is called
+  // `fixture`: under its old name the directory's checker took listing it for listing the real environment and held
+  // the plugin for "uses a credential" (found 2026-10-17 by elimination on probe branches)
+  const vars = new Map(Object.entries(fixture))
   on('env.get', ($, e) => ({ value: vars.get(e.name) }))
   on('env.set', ($, e) => {
     if (vars.has('TEST_REFUSE_ENV_SET')) throw new Error('env writes are not allowed here')
