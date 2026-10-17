@@ -1,10 +1,12 @@
 import type { On, RenderSurface } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
-import { autoTarget, isHeadlessRefusal, parseConfig } from './register'
+import { NAME, autoTarget, isHeadlessRefusal, parseConfig } from './register'
 
-const TOOL = 'mcp__compact-when-ready__compact_now'
-const FLAG = /state\/compact-when-ready\/sess-1\.json$/
+// The tool's full name, spelled out here and NOT taken from register.ts, so a rename that reaches only one of the two
+// files shows up: the tests under "the name trap" at the end check it against what the engine says the plugin is called.
+const TOOL = 'mcp__catnap__compact_now'
+const FLAG = /state\/catnap\/sess-1\.json$/
 const slash = (p: string) => p.split('\\').join('/') // the engine hands paths over with backslashes on Windows
 
 type World = {
@@ -70,7 +72,7 @@ const world = (on: On, init: Partial<World> = {}, fixture: Record<string, string
     w.files.set(e.path, e.text)
     return { value: undefined }
   })
-  on('tool.register', ($, e) => ({ value: { tool: `mcp__compact-when-ready__${e.name}` } }))
+  on('tool.register', ($, e) => ({ value: { tool: `mcp__catnap__${e.name}` } }))
   on('prompt.submit', ($, e) => {
     w.prompts.push(e.text)
     return { text: e.text }
@@ -81,7 +83,7 @@ const world = (on: On, init: Partial<World> = {}, fixture: Record<string, string
     if (w.headless && (e.trigger === undefined || e.trigger === 'plugin')) {
       // the live 2026-10-13 refusal, word for word
       throw new Error(
-        'HooksError: compact-when-ready: $.session.compact: not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on',
+        'HooksError: catnap: $.session.compact: not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on',
       )
     }
     if (w.compactFailures > 0) {
@@ -164,7 +166,7 @@ test('a jump straight past the line skips the soft note', async ($, on) => {
 
 test('a soft line at or above the line is off', async ($, on) => {
   const { w } = world(on, { pct: 55 })
-  w.files.set('X/state/compact-when-ready/config.json', '{"soft": 60, "threshold": 60}')
+  w.files.set('X/state/catnap/config.json', '{"soft": 60, "threshold": 60}')
   await start($)
   expect((await $.tool.call(read)).context ?? []).toEqual([])
 })
@@ -334,10 +336,10 @@ test('subagents get no note and may not compact', async ($, on) => {
 
 test('the config file switches it off and moves the line; a per-session file wins', async ($, on) => {
   const { w } = world(on, { pct: 30 })
-  w.files.set('X/state/compact-when-ready/config.json', '{"threshold": 25}')
+  w.files.set('X/state/catnap/config.json', '{"threshold": 25}')
   await start($)
   expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/the line is 25%/)
-  w.files.set('X/state/compact-when-ready/sess-1.config.json', '{"off": true}')
+  w.files.set('X/state/catnap/sess-1.config.json', '{"off": true}')
   w.pct = 40
   expect((await $.tool.call(read)).context ?? []).toEqual([])
 })
@@ -363,7 +365,7 @@ test('CLAUDE_STATE_DIR moves the state folder, as it does for the settings hooks
   await start($)
   await $.tool.call({ tool: TOOL, handoff: 'h.md', keep: 'k' } as never)
   await clock.advance(1600)
-  expect([...w.files.keys()].map(slash)).toContain('D:/st/compact-when-ready/sess-1.json')
+  expect([...w.files.keys()].map(slash)).toContain('D:/st/catnap/sess-1.json')
 })
 
 const MSGS = [{ role: 'user' as const, text: 'summary', toolUses: [] }]
@@ -372,7 +374,7 @@ const turnEnd = ($: Engine, turnId: string) =>
   $.turn.complete({ reason: 'answer', isAborted: false, turnId, answer: 'ok', durationMs: 1 })
 
 const LIVE_REFUSAL =
-  'HooksError: compact-when-ready: $.session.compact: not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on'
+  'HooksError: catnap: $.session.compact: not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on'
 
 test("the desktop app's refusal is recognised; a busy refusal is not", () => {
   expect(isHeadlessRefusal(new Error(LIVE_REFUSAL))).toBe(true)
@@ -435,7 +437,7 @@ test('a refused /compact gives up: toast, queued state cleared', async ($, on) =
   expect(w.commands.length).toBe(1)
   expect(w.prompts).toEqual([])
   expect(w.toasts.length).toBe(1)
-  expect(w.toasts[0] ?? '').toMatch(/^could not compact this chat \(\/compact was refused/) // the host adds "compact-when-ready:"
+  expect(w.toasts[0] ?? '').toMatch(/^could not compact this chat \(\/compact was refused/) // the host adds "catnap:"
   expect(flag()?.pending).toBe(false)
   expect((await $.tool.call(read)).context ?? []).toEqual([])
 })
@@ -471,7 +473,7 @@ test('a compaction landing some other way ends the give-up', async ($, on) => {
 
 test('a reload clears a queued flag the old module left behind', async ($, on) => {
   const { w, clock, flag } = world(on, { pct: 10 })
-  w.files.set('C:/Users/tester/.claude/state/compact-when-ready/sess-1.json', '{"pending":true,"at":"2026-10-13T17:31:43.722Z","handoff":"h.md"}')
+  w.files.set('C:/Users/tester/.claude/state/catnap/sess-1.json', '{"pending":true,"at":"2026-10-13T17:31:43.722Z","handoff":"h.md"}')
   await start($)
   await clock.advance(1600)
   expect(flag()?.pending).toBe(false)
@@ -502,13 +504,15 @@ test('soft_percent and strict_percent move both lines', { options: { soft_percen
 
 test('the config file still wins over the options', { options: { soft_percent: 30, strict_percent: 40 } }, async ($, on) => {
   const { w } = world(on, { pct: 45 })
-  w.files.set('X/state/compact-when-ready/config.json', '{"threshold": 50}')
+  w.files.set('X/state/catnap/config.json', '{"threshold": 50}')
   await start($)
   expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/comfortable moment before 50%/)
 })
 
-test('COMPACT_WHEN_READY_OFF switches it off, even with a surface', async ($, on) => {
-  const { w, clock } = world(on, { pct: 90 }, { USERPROFILE: 'C:\\Users\\tester', COMPACT_WHEN_READY_OFF: '1' })
+// CATNAP_OFF, and the old name of the switch, which keeps working
+for (const OFF of ['CATNAP_OFF', 'COMPACT_WHEN_READY_OFF'])
+  test(`${OFF} switches it off, even with a surface`, async ($, on) => {
+  const { w, clock } = world(on, { pct: 90 }, { USERPROFILE: 'C:\\Users\\tester', [OFF]: '1' })
   await start($)
   expect((await $.tool.call(read)).context ?? []).toEqual([])
   await turnEnd($, 't1')
@@ -530,7 +534,7 @@ test('a session where nothing draws leaves no log file; one that draws does', as
 
 // The auto line: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE in the mod's own process.
 const AUTO = 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'
-const ORIG = 'COMPACT_WHEN_READY_AUTO_ORIG'
+const ORIG = 'CATNAP_AUTO_ORIG'
 const HOME = { USERPROFILE: 'C:\\Users\\tester' }
 
 test('a session that draws gets auto-compact at 70 by default, and what was there is kept', async ($, on) => {
@@ -564,11 +568,11 @@ test('config.json moves the auto line at the next check, and off puts the old va
   await start($)
   await clock.advance(1600)
   expect(vars.get(AUTO)).toBe('70')
-  w.files.set('X/state/compact-when-ready/config.json', '{"auto": 75}')
+  w.files.set('X/state/catnap/config.json', '{"auto": 75}')
   await $.tool.call(read)
   await clock.advance(1600)
   expect(vars.get(AUTO)).toBe('75')
-  w.files.set('X/state/compact-when-ready/config.json', '{"auto": 75, "off": true}')
+  w.files.set('X/state/catnap/config.json', '{"auto": 75, "off": true}')
   await $.tool.call(read)
   await clock.advance(1600)
   expect(vars.get(AUTO)).toBe('55')
@@ -577,7 +581,7 @@ test('config.json moves the auto line at the next check, and off puts the old va
 test('off puts an unset variable back to unset, also after a reload', async ($, on) => {
   // a reload: the variable holds the mod's own 70, the marker says it was unset before
   const { w, clock, vars } = world(on, {}, { ...HOME, [AUTO]: '70', [ORIG]: '' })
-  w.files.set('X/state/compact-when-ready/config.json', '{"off": true}')
+  w.files.set('X/state/catnap/config.json', '{"off": true}')
   await start($)
   await clock.advance(1600)
   expect(vars.has(AUTO)).toBe(false)
@@ -604,8 +608,9 @@ test('a run where nothing draws never touches the auto line', async ($, on) => {
   expect(vars.has(ORIG)).toBe(false)
 })
 
-test('COMPACT_WHEN_READY_OFF leaves the auto line alone, even with a surface', async ($, on) => {
-  const { clock, vars } = world(on, { pct: 30 }, { ...HOME, COMPACT_WHEN_READY_OFF: '1' })
+for (const OFF of ['CATNAP_OFF', 'COMPACT_WHEN_READY_OFF'])
+  test(`${OFF} leaves the auto line alone, even with a surface`, async ($, on) => {
+  const { clock, vars } = world(on, { pct: 30 }, { ...HOME, [OFF]: '1' })
   await start($)
   await $.tool.call(read)
   await clock.advance(3200)
@@ -807,4 +812,38 @@ test('a drop ends a give-up when the hook is silent', async ($, on) => {
   await $.tool.call(read)
   w.pct = 61
   expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Save and compact now/)
+})
+
+// The name trap: the tool's full name is built from the plugin's name ($.plugin.name, from plugin.json), the tool.call
+// matcher that answers it is a regex literal in register.ts (it has to be one: `claude plugin validate` reads it
+// statically), and NAME is the constant the rest of the module uses. If any of them differs, Claude's call to the tool
+// goes unanswered while every other test here still passes. The notes tell Claude which name to call, so they show
+// what the engine thinks the plugin is called.
+const advertised = async ($: Engine) => {
+  await start($)
+  const note = (await $.tool.call(read)).context?.[0] ?? ''
+  return /[Cc]all (mcp__\S+) with/.exec(note)?.[1] ?? ''
+}
+
+test('plugin.json, NAME and this file agree on the tool name the notes tell Claude to call', async ($, on) => {
+  world(on, { pct: 61 })
+  const name = await advertised($)
+  expect(name).toBe(TOOL) // the name the engine gives the plugin (plugin.json)
+  expect(name).toBe(`mcp__${NAME}__compact_now`)
+})
+
+test('a call to the advertised tool name is answered by the mod, not passed on', async ($, on) => {
+  world(on, { pct: 61 })
+  const name = await advertised($)
+  const r = await $.tool.call({ tool: name, handoff: 'h.md', keep: 'k' } as never)
+  expect(JSON.stringify(r)).toMatch(/Compaction queued/)
+})
+
+test('the matcher answers the full tool name and nothing else', async ($, on) => {
+  world(on, { pct: 10 })
+  await start($)
+  for (const other of [`${TOOL}x`, `x${TOOL}`, 'mcp__other-plugin__compact_now', 'compact_now']) {
+    const r = await $.tool.call({ tool: other, handoff: 'h.md', keep: 'k' } as never)
+    expect(JSON.stringify(r)).not.toMatch(/Compaction queued/)
+  }
 })

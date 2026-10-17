@@ -1,6 +1,6 @@
 import type { PluginOptions, Register, Timer } from 'claude-code'
 
-// compact-when-ready: Claude compacts its own conversation at a clean break, then carries on by itself.
+// catnap (formerly compact-when-ready): Claude compacts its own conversation at a clean break, then carries on by itself.
 // Two lines on the context window:
 // - SOFT (soft_percent, 50 by default): one note on a tool result: plan a compaction at a comfortable moment, i.e.
 //   finish the piece you are on properly (a page, a section), start nothing big, then save, compact_now and end the turn.
@@ -11,7 +11,7 @@ import type { PluginOptions, Register, Timer } from 'claude-code'
 //   The mod sets CLAUDE_AUTOCOMPACT_PCT_OVERRIDE in its own process to this value (the engine reads the variable at
 //   each check: moved 70->7 and 7->12 at runtime, live 2026-10-17), so the mod's setting wins over one from the
 //   settings files, which stays as the fallback when the mod is off. 0 leaves Claude Code's own setting alone; off
-//   (config.json) or 0 puts back what the process had before the mod first set it (kept in COMPACT_WHEN_READY_AUTO_ORIG,
+//   (config.json) or 0 puts back what the process had before the mod first set it (kept in CATNAP_AUTO_ORIG,
 //   so a reload still knows it). Only in a person's session, like the notes.
 // "Save" is the save_step option when it is set (a command such as /save-before-compact), else a plain instruction to
 // write a handoff file. When a turn that called compact_now ends, this mod compacts the session and queues a prompt
@@ -28,7 +28,7 @@ import type { PluginOptions, Register, Timer } from 'claude-code'
 //   (anthropics/claude-code#102134). The fallback: context that falls DROP_POINTS or more between two checks, with no
 //   compaction of the mod's own queued or running, was compacted some other way.
 //
-// State folder = <state>/compact-when-ready, <state> = CLAUDE_STATE_DIR, else ~/.claude/state.
+// State folder = <state>/catnap (NAME), <state> = CLAUDE_STATE_DIR, else ~/.claude/state.
 // Config: the userConfig options (soft_percent, strict_percent, auto_percent, save_step), then config.json in the state
 //   folder ({"soft": 50, "threshold": 60, "auto": 70, "off": false}, re-read on every check, no reload needed), then a
 //   per-session <session id>.config.json beside it; each later one wins. A soft line at or above the strict line is off;
@@ -42,11 +42,20 @@ import type { PluginOptions, Register, Timer } from 'claude-code'
 //   claude-desktop instead. A `claude -p` started from inside such a chat inherits that entry point, but also CLAUDECODE
 //   and CLAUDE_CODE_CHILD_SESSION, which the engine sets only for the processes it starts (its own nested-session
 //   test); with either one set it is not a person's session. A plain -p run is untouched, and so is any process with
-//   COMPACT_WHEN_READY_OFF set (or the author's wrapper markers CLAUDE_DELEGATE_LEG / CLAUDE_HARNESS_PROBE).
+//   CATNAP_OFF set, or the old COMPACT_WHEN_READY_OFF (or the author's wrapper markers CLAUDE_DELEGATE_LEG / CLAUDE_HARNESS_PROBE).
 // Deferred work (the compaction, the prompts) runs on one timer started in session.start: $ is only ever spelled at
 // its call site inside a hook, so the deferred steps are flags this timer picks up.
 
+// The plugin's name (.claude-plugin/plugin.json "name"). The default tool name, the state folder and the "[NAME]" prefix
+// of every note are built from it. The ONE exception is the tool.call matcher further down, which has to be a regex
+// literal: `claude plugin validate` and the directory's checks read it statically and show tool=? for anything built at
+// run time. So a rename touches two places: this line and that literal. hooks/catnap.test.ts fails if they disagree
+// with each other or with plugin.json (the notes tell Claude the name the engine gives the plugin, and the test calls
+// that name and expects the mod to answer).
+export const NAME = 'catnap'
 const TOOL = 'compact_now'
+// the tool's full name as the engine registers it for a plugin of that name
+export const toolNameFor = (plugin: string): string => `mcp__${plugin}__${TOOL}`
 const DEFAULT_SOFT = 50
 const DEFAULT_THRESHOLD = 60
 const DEFAULT_AUTO = 70
@@ -67,7 +76,7 @@ type Job = { handoff: string; keep: string; percent: number }
 
 export const stateDirFor = (stateEnv: string | undefined, home: string | undefined): string => {
   const base = stateEnv || (home ? `${home}/.claude/state` : '')
-  return base ? `${base.split('\\').join('/').replace(/\/+$/, '')}/compact-when-ready` : ''
+  return base ? `${base.split('\\').join('/').replace(/\/+$/, '')}/${NAME}` : ''
 }
 
 // A line in percent: above 0 and below 100 (lowest = 0 for the auto line, where 0 means "leave it alone").
@@ -127,23 +136,23 @@ const steps = (tool: string, save: string): string =>
 
 export const softText = (p: number, t: number, tool: string, save = '') =>
   [
-    `[compact-when-ready] Context is at ${p}% of the window. Compact at a comfortable moment before ${t}%, where you will be told to compact at once:`,
+    `[${NAME}] Context is at ${p}% of the window. Compact at a comfortable moment before ${t}%, where you will be told to compact at once:`,
     '- Finish the piece you are on, and finish it properly (for example the page, section or feature: done, checked, saved). Do not start the next big piece before compacting.',
     `- At that clean break: ${saveShort(save)}, call ${tool} with the handoff file's path and what the summary must keep, then end your reply.`,
     '- If your reply is ending anyway (the work is done, or you are waiting on the user), that is a good moment too.',
   ].join('\n')
 
 export const noteText = (p: number, t: number, tool: string, save = '') =>
-  `[compact-when-ready] Context is at ${p}% of the window (the line is ${t}%). Save and compact now; do not wait for a better moment. In this order:\n${steps(tool, save)}`
+  `[${NAME}] Context is at ${p}% of the window (the line is ${t}%). Save and compact now; do not wait for a better moment. In this order:\n${steps(tool, save)}`
 
 export const askText = (p: number, t: number, tool: string, save = '') =>
-  `[compact-when-ready] Your last turn ended with context at ${p}% of the window (the line is ${t}%). Compact before anything else, in this order:\n${steps(tool, save)}`
+  `[${NAME}] Your last turn ended with context at ${p}% of the window (the line is ${t}%). Compact before anything else, in this order:\n${steps(tool, save)}`
 
 const QUEUED_NOTE =
-  '[compact-when-ready] Compaction is queued. End your reply now: no more tool calls and no more text. It runs as soon as the turn ends, and a message then tells you to continue.'
+  `[${NAME}] Compaction is queued. End your reply now: no more tool calls and no more text. It runs as soon as the turn ends, and a message then tells you to continue.`
 
 const continueText = (job: Job) =>
-  `[compact-when-ready] The conversation was just compacted at your request (context had reached ${job.percent}%). ` +
+  `[${NAME}] The conversation was just compacted at your request (context had reached ${job.percent}%). ` +
   `Your handoff: ${job.handoff}. Read it first, then carry on exactly where you left off, with the next step it names. ` +
   'If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work.'
 
@@ -152,7 +161,7 @@ const instructionsFor = (job: Job) =>
 
 export const register: Register = (on, options) => {
   const { base, save } = fromOptions(options)
-  let toolName = `mcp__compact-when-ready__${TOOL}`
+  let toolName = toolNameFor(NAME) // replaced at session.start by the name the engine gives the plugin
   let stateDir = ''
   let sid = ''
   let desktopChat = false // a desktop app chat, not a process started from inside one: acts with no window attached
@@ -171,7 +180,7 @@ export const register: Register = (on, options) => {
   let slashAt = 0
   let landedJob: Job | null = null // its compaction landed: the timer sends the continue prompt
   let gaveUp = false // compacting failed this cycle: no notes or asks until a compaction lands some other way
-  let toast: string | null = null // a toast the timer shows (the host puts "compact-when-ready:" in front)
+  let toast: string | null = null // a toast the timer shows (the host puts "catnap:" in front)
   let autoOrig = '' // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE before the mod first set it ('' = unset)
   let autoNow: string | undefined // what the variable holds now
   let autoTouched = false // the mod (this module or one before a reload) has set the variable
@@ -232,9 +241,11 @@ export const register: Register = (on, options) => {
   }
 
   on('session.start', async ($, e, next) => {
-    toolName = `mcp__${$.plugin.name}__${TOOL}`
-    // COMPACT_WHEN_READY_OFF, or the author's wrapper markers (each name spelled out: the engine lists what a mod reads)
+    toolName = toolNameFor($.plugin.name)
+    // CATNAP_OFF (or its old name COMPACT_WHEN_READY_OFF), or the author's wrapper markers (each name spelled out: the
+    // engine lists what a mod reads)
     const isWrapperChild =
+      (await $.env.get('CATNAP_OFF')) !== undefined ||
       (await $.env.get('COMPACT_WHEN_READY_OFF')) !== undefined ||
       (await $.env.get('CLAUDE_DELEGATE_LEG')) !== undefined ||
       (await $.env.get('CLAUDE_HARNESS_PROBE')) !== undefined
@@ -249,7 +260,7 @@ export const register: Register = (on, options) => {
       (await $.env.get('CLAUDE_CODE_CHILD_SESSION')) === undefined
     // the auto line's starting point; after a reload the marker still holds the value from before the mod's first set
     autoNow = await $.env.get('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE')
-    const marked = await $.env.get('COMPACT_WHEN_READY_AUTO_ORIG')
+    const marked = await $.env.get('CATNAP_AUTO_ORIG')
     autoTouched = marked !== undefined
     autoOrig = marked ?? autoNow ?? ''
     if (stateDir) {
@@ -305,7 +316,7 @@ export const register: Register = (on, options) => {
           try {
             // the first set keeps what was there, so off or 0 can put it back, also after a reload; since 2.1.302 a
             // write the engine holds (a session under an organization's settings) resolves { deny } instead of rejecting
-            const kept = autoTouched ? undefined : await $.env.set('COMPACT_WHEN_READY_AUTO_ORIG', autoOrig)
+            const kept = autoTouched ? undefined : await $.env.set('CATNAP_AUTO_ORIG', autoOrig)
             if (kept?.deny) throw new Error(kept.deny)
             const res = await $.env.set('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE', want.value)
             if (res?.deny) throw new Error(res.deny)
@@ -404,9 +415,9 @@ export const register: Register = (on, options) => {
   })
 
   // Serves the mod's own compact_now, the documented way: a tool.call hook matched to the registered tool's full
-  // name (fixed text, so the directory's checks can see it answers only its own tool; a RegExp, because the
-  // generated types list only the tools known when they were written).
-  on('tool.call', { tool: /^mcp__compact-when-ready__compact_now$/ }, async ($, e) => {
+  // name (fixed text, so the directory's checks can see it answers only its own tool; a RegExp, because the generated
+  // types list only the tools known when they were written). It must read mcp__<NAME>__<TOOL>: see NAME above.
+  on('tool.call', { tool: /^mcp__catnap__compact_now$/ }, async ($, e) => {
     if (e.agentId) return { deny: 'Only the main conversation can compact itself; a subagent cannot.' }
     const input = e as unknown as { handoff?: unknown; keep?: unknown }
     const handoff = String(input.handoff ?? '').trim()

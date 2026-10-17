@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// compact-when-ready: check your own history.
+// catnap: check your own history.
 // Read-only, zero dependencies, no network. Prints numbers only, never transcript text.
 //
 //   node bench/check.mjs [--days 30] [--json] [--soft 50] [--auto 70] [--replace-manual]
@@ -211,7 +211,7 @@ export function render(t, o) {
   const mid = t.auto ? `${t.midTask} of ${t.auto} (${P(t.midTask / t.auto)}) cut in mid-task` : 'none';
   const unk = t.unknownMid ? `, ${t.unknownMid} unknown` : '';
   return [
-    `compact-when-ready: your own history, last ${o.days} days`,
+    `catnap: your own history, last ${o.days} days`,
     `Sessions scanned:        ${t.withCalls}   (long, past ${o.soft}% of window: ${t.long})`,
     `Auto-compactions:        ${t.auto}   (mid-task: ${mid}${unk})`,
     `Manual compactions:      ${t.manual}`,
