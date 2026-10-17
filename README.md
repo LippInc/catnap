@@ -131,7 +131,8 @@ These are the calls `claude plugin validate .` lists, and what each one is for. 
     - `CATNAP_OFF`, and its old name `COMPACT_WHEN_READY_OFF`
     - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` and `CATNAP_AUTO_ORIG`, for the auto line
     - `CLAUDE_DELEGATE_LEG` and `CLAUDE_HARNESS_PROBE`, markers my own wrapper scripts set; elsewhere they do nothing
-  - It reads no keys, tokens or other credentials. The only conversation text it reads is the two fields Claude passes to `compact_now`.
+  - It reads no keys, tokens or other credentials. The only conversation text its hooks read is the two fields Claude passes to `compact_now`.
+  - The `/check` command runs only when you type it. It asks Claude to run `bench/check.mjs`, which reads your local Claude Code transcript files and uses only numbers from them (token counts, timestamps, stop reasons, compaction markers), never message text. It prints a summary, writes nothing and sends nothing.
 - **Other calls:** `$.clock.every` and `$.clock.now` run its timer. `$.ui.toast` shows a short notice when something fails.
 
 ## Tested
@@ -170,7 +171,7 @@ These are the calls `claude plugin validate .` lists, and what each one is for. 
 
 ## Privacy
 
-catnap collects nothing and sends nothing anywhere. It makes no network requests, no model calls of its own and starts no processes, and it has no account, telemetry or analytics. What it keeps stays on your machine, in its own state folder (see [Files it writes](#files-it-writes)). The two prompts it submits go into your own session and hold only the text listed under [What it can reach](#what-it-can-reach).
+catnap collects nothing and sends nothing anywhere. It makes no network requests, no model calls of its own and starts no processes, and it has no account, telemetry or analytics. What it keeps stays on your machine, in its own state folder (see [Files it writes](#files-it-writes)). The two prompts it submits go into your own session and hold only the text listed under [What it can reach](#what-it-can-reach). The `/check` command reads your local Claude Code transcripts on your machine for numbers only, and sends nothing.
 
 ## License
 
