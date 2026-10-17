@@ -24,7 +24,7 @@ Claude Code compacts your conversation when the context window fills up, usually
 
 **Check your own history in seconds:** `/catnap:check` inside Claude Code (or `node bench/check.mjs` from a clone) reads your local Claude Code logs (numbers only, nothing leaves your machine) and tells you how often auto-compact cut in mid-task and what a clean-break compaction would have saved. The author's last 30 days: 78 of 82 auto-compactions landed while Claude was in the middle of a tool loop. That is not bad luck: Claude is mid-loop almost all the time, and auto-compact doesn't wait.
 
-You set the lines; Claude picks the moment inside them. Nothing compacts until Claude has finished its piece and written its note, and one setting turns it all off.
+You set the lines; Claude picks the moment inside them. The mod compacts nothing until Claude has finished its piece and written its note (Claude Code's own auto-compact stays on as the backstop), and one setting turns it all off.
 
 ## Install
 
