@@ -221,7 +221,8 @@ export function render(t, o) {
     `Method: re-read = sum of per-call context; window 1M if model id ends [1m] or any call >200K, else 200K;`,
     `  mid-task = last call before the auto-compact had stop_reason tool_use; counterfactual replays your own`,
     `  per-call growth, compacts at the first end_turn past ${o.soft}% (backstop at ${o.auto}%), reset to ${(t.reset / 1000).toFixed(0)}K${t.resetFromData ? ' (your median)' : ' (default)'}.`,
-    `Estimate, see bench/METHOD.md`,
+    `Estimate of tokens re-read, not of plan usage (cache reads weigh less there). It covers all your sessions,`,
+    `  short ones included, so it is usually lower than the README's replay of long sessions. See bench/METHOD.md`,
   ].join('\n');
 }
 
