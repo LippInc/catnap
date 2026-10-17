@@ -31,14 +31,14 @@ You set the lines; Claude picks the moment inside them. The mod compacts nothing
 You need Claude Code v2.1.287 or later, or v2.1.286 in the desktop app. In your shell:
 
 ```bash
-claude plugin marketplace add LippInc/catnap
+claude plugin marketplace add LippInc/compact-when-ready
 ```
 
 ```bash
 claude plugin install catnap@lippinc
 ```
 
-Or from a terminal session: `/plugin install catnap --marketplace LippInc/catnap`. New sessions load it on their own, including the desktop app's Code tab. A session that is already open needs `/reload-plugins` first.
+Or from a terminal session: `/plugin install catnap --marketplace LippInc/compact-when-ready`. New sessions load it on their own, including the desktop app's Code tab. A session that is already open needs `/reload-plugins` first.
 
 catnap is a mod: code that runs with your permissions. It makes no network calls and writes only to its own state folder. Before you install it, clone the repository and run `claude plugin validate .`: it lists every event catnap hooks and every call it makes (also under [What it can reach](#what-it-can-reach)).
 
