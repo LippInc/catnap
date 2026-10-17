@@ -403,27 +403,32 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('tool.call', async ($, e, next) => {
-    if (e.tool === toolName) {
-      if (e.agentId) return { deny: 'Only the main conversation can compact itself; a subagent cannot.' }
-      const input = e as unknown as { handoff?: unknown; keep?: unknown }
-      const handoff = String(input.handoff ?? '').trim()
-      const keep = String(input.keep ?? '').trim()
-      if (!handoff) return { deny: `Save everything first (${saveShort(save)}), then call again with the handoff file path.` }
-      pending = { handoff, keep: keep || 'the current task and its next step', percent: (await $.session.usage()).context.percent ?? -1 }
-      due = false
-      retries = 0
-      gaveUp = false // a call of the model's own is a fresh try
-      flagDirty = true
-      log('queued', { handoff, percent: pending.percent })
-      return {
-        result:
-          'Compaction queued. End your reply now: write nothing more and call no more tools. ' +
-          'The conversation is compacted as soon as this turn ends, and a message then tells you to continue.',
-      }
+  // Serves the mod's own compact_now, the documented way: a tool.call hook matched to the registered tool's full
+  // name (fixed text, so the directory's checks can see it answers only its own tool; a RegExp, because the
+  // generated types list only the tools known when they were written).
+  on('tool.call', { tool: /^mcp__compact-when-ready__compact_now$/ }, async ($, e) => {
+    if (e.agentId) return { deny: 'Only the main conversation can compact itself; a subagent cannot.' }
+    const input = e as unknown as { handoff?: unknown; keep?: unknown }
+    const handoff = String(input.handoff ?? '').trim()
+    const keep = String(input.keep ?? '').trim()
+    if (!handoff) return { deny: `Save everything first (${saveShort(save)}), then call again with the handoff file path.` }
+    pending = { handoff, keep: keep || 'the current task and its next step', percent: (await $.session.usage()).context.percent ?? -1 }
+    due = false
+    retries = 0
+    gaveUp = false // a call of the model's own is a fresh try
+    flagDirty = true
+    log('queued', { handoff, percent: pending.percent })
+    return {
+      result:
+        'Compaction queued. End your reply now: write nothing more and call no more tools. ' +
+        'The conversation is compacted as soon as this turn ends, and a message then tells you to continue.',
     }
+  }).catch(() => ({ deny: 'compact_now failed inside the mod. Your work is saved; run /compact yourself, or call it again.' }))
+
+  // Every other tool call goes to its tool; past the lines, the result gets a note.
+  on('tool.call', async ($, e, next) => {
     const r = await next(e)
-    if (e.agentId || r.deny !== undefined) return r
+    if (e.tool === toolName || e.agentId || r.deny !== undefined) return r
     if (pending) return { ...r, context: [...(r.context ?? []), QUEUED_NOTE] }
     if (!stateDir || (!desktopChat && (await $.session.surfaces()).length === 0)) return r
     const pct = (await $.session.usage()).context.percent

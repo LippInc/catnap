@@ -200,6 +200,9 @@ test('compact_now queues, the turn end compacts, then a continue prompt is sent'
   await start($)
   const q = await $.tool.call({ tool: TOOL, handoff: 'C:/p/.claude/handoffs/x.md', keep: 'the mod build' } as never)
   expect(String(q.result)).toMatch(/Compaction queued\. End your reply now/)
+  expect(q.context ?? []).toEqual([]) // its own answer, with no note added past the line
+  // a second call while queued is answered by the mod again, still with no note
+  expect((await $.tool.call({ tool: TOOL, handoff: 'C:/p/.claude/handoffs/x.md', keep: 'the mod build' } as never)).context ?? []).toEqual([])
   await clock.advance(1600)
   expect(flag()?.pending).toBe(true)
   // a tool call after queueing is told to stop
