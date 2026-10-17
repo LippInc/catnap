@@ -16,13 +16,13 @@ Claude Code compacts your conversation when the context window fills up, usually
 | | Without catnap | With catnap |
 | :- | :- | :- |
 | When it compacts | when the window is nearly full | when Claude finishes the piece it is on, from 50% |
-| Compactions in the middle of a task | 78 of 82 auto-compactions in the author's last 30 days of logs | none in the author's own sessions in 5 days with it (13 of 13 at a moment Claude picked) |
+| Compactions in the middle of a task | 78 of 82 auto-compactions in the author's last 30 days of logs | none in the author's real work in 5 days with it (13 of 13 at a moment Claude picked) |
 | Right after | Claude re-reads files and works out where it was | Claude reads its own note and carries on |
-| Context re-read in long sessions | baseline | **about 30% less**\* |
+| Context re-read in long sessions | baseline | **about 30% less**\* (17.5% over a whole month, short sessions included) |
 
-\*Measured by replaying the author's 9 real long sessions with the mod against Claude Code's default auto-compact point: 33.0% less. One known bias pushes that up by a few points, so we say about 30%. Against an auto-compact line already set to 70%, it was 16%. Most of the saving comes from compacting earlier. A lower auto-compact setting does that too, but auto-compact lands mid-task almost every time; this waits for a clean break. On a subscription the saving in usage is smaller than in tokens, because cache reads weigh less. Method and script: [bench/](bench/).
+\*Measured by replaying the author's 9 real long sessions with the mod against Claude Code's default auto-compact point: 33.0% less. One known bias pushes that up, so we say about 30%. Per session it ran from 0% (sessions that ended right after compacting) to 46%. Against an auto-compact line already set to 70%, it was 16%. Most of the saving comes from compacting earlier. A lower auto-compact setting does that too, but auto-compact lands mid-task almost every time; this waits for a clean break. These are tokens re-read, not plan usage: on a subscription the saving in usage is smaller, because cache reads weigh less. Script and per-session table: [bench/REPLAY.md](bench/REPLAY.md).
 
-**Check your own history in seconds:** `/catnap:check` inside Claude Code (or `node bench/check.mjs` from a clone) reads your local Claude Code logs (numbers only, nothing leaves your machine) and tells you how often auto-compact cut in mid-task and what a clean-break compaction would have saved. Your number will differ: it covers all your sessions, short ones included, so it is usually lower than the long-session replay above (17.5% on the author's last 30 days). The author's last 30 days: 78 of 82 auto-compactions landed while Claude was in the middle of a tool loop. That is not bad luck: Claude is mid-loop almost all the time, and auto-compact doesn't wait.
+**Check your own history in seconds:** `/catnap:check` inside Claude Code (or `node bench/check.mjs` from a clone) reads your local Claude Code logs and prints numbers only (nothing leaves your machine) and tells you how often auto-compact cut in mid-task and what a clean-break compaction would have saved. Your number will differ: it covers all your sessions, short ones included, so it is usually lower than the long-session replay above (17.5% on the author's last 30 days). The author's last 30 days: 78 of 82 auto-compactions landed while Claude was in the middle of a tool loop. That is not bad luck: on the author's machine about 92% of Claude's calls end in a tool call, and auto-compact doesn't wait for a clean break.
 
 You set the lines; Claude picks the moment inside them. The mod compacts nothing until Claude has finished its piece and written its note (Claude Code's own auto-compact stays on as the backstop), and one setting turns it all off.
 
@@ -140,8 +140,11 @@ These are the calls `claude plugin validate .` lists, and what each one is for. 
 - 60 automated tests (`claude plugin test .`), including the desktop app's refusal word for word. I broke twenty copies of the mod on purpose (three in 0.2; in 0.3, five for the auto line, seven for the drop fallback and five for desktop chats), and the tests fail on each one. Three more broken copies, for the rename: a tool name, a matcher or a manifest that disagrees with the others. Three of the tests exist to fail on those.
 - The live runs below were made before the rename, when the mod was called compact-when-ready.
 - Live on Windows 11, 2026-10-13:
-  - **Desktop app Code tab (Claude Code 2.1.295):** `/compact` ran and cut the chat from 257K to 29K tokens. The continue message arrived and the work carried on.
-  - **Terminal (Claude Code 2.1.293, Haiku 5.5):** the mod compacted directly, from 66K to 7K tokens in 10 seconds. Claude read the handoff and carried on.
+  - **Desktop app Code tab (Claude Code 2.1.295):** `/compact` ran at 257K tokens and wrote a 29K-token summary. The continue message arrived and the work carried on.
+  - **Terminal (Claude Code 2.1.293, Haiku 5.5):** the mod compacted directly at 66K tokens, with a 7K-token summary, in 10 seconds. Claude read the handoff and carried on.
+- As catnap, headless with a 200K window (Claude Code 2.1.302), 2026-10-17 and 10-18:
+  - **Windows 11:** 2 of 2 runs did the whole loop at the 50% note. Claude finished the feature it was on, wrote its handoff, compacted (context about 106K to 52K tokens) and carried on to a green finish.
+  - **Linux (Ubuntu on WSL):** with the strict line at 50%, the same loop ran and the task finished green. In an earlier run with the strict line at 54%, Claude ignored the 50% note and finished the whole task before reaching 54%, so it never compacted.
 - The auto line, live on Claude Code 2.1.296, 2026-10-17:
   - **Changing the variable at runtime moves auto-compact both ways.** A test mod lowered it from 70 to 7 at session start. Auto-compact then fired at the first check past the 7% line (about 69K): at 87K tokens, once a large file read had come in. In the control run it didn't fire up to 112K. Raised from 7 to 12, it didn't fire up to 111K either.
   - **In a terminal session, the mod set it:** no value at the start, the toast for a line below the strict one, and `7` set 1.5 seconds later, from `config.json`.
@@ -151,7 +154,7 @@ These are the calls `claude plugin validate .` lists, and what each one is for. 
 - Desktop chats with no window attached, on Claude Code 2.1.299, 2026-10-17:
   - **The bug:** in a real chat, one long turn crossed 50% and then 60% with no note. The app had no window attached to the chat, and 0.2 only acted while one was. The first note came at 63%, right after a new prompt was typed in that chat.
   - **The fix, on the same engine with nothing attached** (test lines at 1% and 2%): 0.3 knew it was a desktop chat, gave the note at 5% and asked at the turn end. A `claude -p` started from inside a chat stayed silent. With the fix taken out, the first run was silent too, as the real chat had been.
-- **Not tested:** macOS, Linux, the VS Code extension, long real sessions in a terminal, the auto line in the desktop app's Code tab, and a session with `sec-default` really seated (that needs an organization's managed settings).
+- **Not tested:** macOS, the VS Code extension, long real sessions in a terminal, the auto line in the desktop app's Code tab, and a session with `sec-default` really seated (that needs an organization's managed settings).
 
 ## Limits
 
