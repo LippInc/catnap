@@ -1,2 +1,5 @@
 # written by Claude Code when it loads the mod from this folder
 .claude-plugin/types/
+
+# dependencies installed for the ports
+node_modules/

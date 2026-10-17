@@ -11,16 +11,18 @@ nap.
 wake up knowing everything.
 ```
 
-Claude Code compacts your conversation when the context window fills up, often halfway through an edit. catnap gives Claude a heads-up at 50% instead. Claude finishes the piece it is on, writes itself a handoff note, compacts, and carries on by itself. You don't type anything.
+Claude Code compacts your conversation when the context window fills up, usually in the middle of a task. catnap gives Claude a heads-up at 50% instead. Claude finishes the piece it is on, writes itself a handoff note, compacts, and carries on by itself. You don't type anything.
 
 | | Without catnap | With catnap |
 | :- | :- | :- |
 | When it compacts | when the window is nearly full | when Claude finishes the piece it is on, from 50% |
-| Mid-edit compactions | often | none in 5 days of the author's real work (13 of 13 compactions at a clean break) |
+| Compactions in the middle of a task | 78 of 82 in the author's last 30 days | none in 5 days of the author's real work (13 of 13 at a moment Claude picked) |
 | Right after | Claude re-reads files and works out where it was | Claude reads its own note and carries on |
 | Context re-read in long sessions | baseline | **about 30% less**\* |
 
-\*Measured by replaying the author's 9 real long sessions against Claude Code's default auto-compact point: 33.0% less. One known bias pushes that up by a few points, so we say about 30%. Against an auto-compact line already set to 70%, it was 16%. Your plan's usage meter counts this re-reading. Method and script: [bench/](bench/). **Check your own history in seconds:** `node bench/check.mjs`.
+\*Measured by replaying the author's 9 real long sessions against Claude Code's default auto-compact point: 33.0% less. One known bias pushes that up by a few points, so we say about 30%. Against an auto-compact line already set to 70%, it was 16%. Your plan's usage meter counts this re-reading. Method and script: [bench/](bench/).
+
+**Check your own history in seconds:** `/catnap:check` inside Claude Code (or `node bench/check.mjs` from a clone) reads your local Claude Code logs (numbers only, nothing leaves your machine) and tells you how often auto-compact cut in mid-task and what a clean-break compaction would have saved. The author's last 30 days: 78 of 82 auto-compactions landed while Claude was in the middle of a tool loop. That is not bad luck: Claude is mid-loop almost all the time, and auto-compact doesn't wait.
 
 You set the lines; Claude picks the moment inside them. Nothing compacts until Claude has finished its piece and written its note, and one setting turns it all off.
 
