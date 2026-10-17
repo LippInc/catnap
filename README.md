@@ -143,7 +143,7 @@ These are the calls `claude plugin validate .` lists, and what each one is for. 
   - **Desktop app Code tab (Claude Code 2.1.295):** `/compact` ran at 257K tokens and wrote a 29K-token summary. The continue message arrived and the work carried on.
   - **Terminal (Claude Code 2.1.293, Haiku 5.5):** the mod compacted directly at 66K tokens, with a 7K-token summary, in 10 seconds. Claude read the handoff and carried on.
 - As catnap, headless with a 200K window (Claude Code 2.1.302), 2026-10-17 and 10-18:
-  - **Windows 11:** 2 of 2 runs did the whole loop at the 50% note. Claude finished the feature it was on, wrote its handoff, compacted (context about 106K to 52K tokens) and carried on to a green finish.
+  - **Windows 11:** 2 of 2 runs did the whole loop at the 50% note. Claude finished the feature it was on, wrote its handoff, compacted (context about 106K to 50-51K tokens) and carried on to a green finish.
   - **Linux (Ubuntu on WSL):** with the strict line at 50%, the same loop ran and the task finished green. In an earlier run with the strict line at 54%, Claude ignored the 50% note and finished the whole task before reaching 54%, so it never compacted.
 - The auto line, live on Claude Code 2.1.296, 2026-10-17:
   - **Changing the variable at runtime moves auto-compact both ways.** A test mod lowered it from 70 to 7 at session start. Auto-compact then fired at the first check past the 7% line (about 69K): at 87K tokens, once a large file read had come in. In the control run it didn't fire up to 112K. Raised from 7 to 12, it didn't fire up to 111K either.
