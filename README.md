@@ -1,3 +1,5 @@
+<img alt="" src="https://raw.githubusercontent.com/LippInc/compact-when-ready/main/docs/banner.svg" width="100%">
+
 # compact-when-ready: Claude compacts itself at a clean break
 
 A Claude Code mod. In a long session, auto-compact fires whenever the window fills, often in the middle of an edit. This mod lets Claude pick the moment instead. Claude is told early that a compaction is coming. It finishes the piece it is working on, saves a handoff file, calls a `compact_now` tool and ends its turn. The mod then compacts the conversation and sends Claude a message to carry on from the handoff. You don't type anything.
@@ -62,20 +64,40 @@ A change there applies to sessions that start after it, or to an open one after 
 
 All its files go in `~/.claude/state/compact-when-ready/`, or in `$CLAUDE_STATE_DIR/compact-when-ready/` if you set that variable:
 
-- **`<session id>.json`** is `{"pending": true, ...}` while a compaction is queued. If you have a Stop hook that keeps turns going, make it stay quiet while this file is fresh. Otherwise the turn never ends and the compaction never runs.
+- **`<session id>.json`** is `{"pending": true, ...}` while a compaction is queued. Other tools may read it: if you have a Stop hook that keeps turns going, make it stay quiet while this file is fresh. Otherwise the turn never ends and the compaction never runs.
 - **`<session id>.log.json`** holds the last 60 events (notes, queued, compacted, gave up) for debugging. Only a person's session gets one, or a session where the mod did something.
 - **`config.json`** is optional. It overrides the options live, with no reload: `{"soft": 50, "threshold": 60, "auto": 70, "off": false}`. `threshold` is the strict line.
 
 ## What it can reach
 
-This is what `claude plugin validate` reports:
+These are the calls `claude plugin validate .` lists, and what each one is for. Nothing here leaves your machine: the mod makes no network requests, no model calls of its own, and starts no processes.
 
-- **Hooks:** `session.start`, `tool.call`, `turn.complete`, `session.compact`, `session.end`
-- **Calls:** `$.clock.every`, `$.clock.now`, `$.command.run` (only `/compact`), `$.env.get`, `$.env.set` (only the two variables below), `$.fs.read`, `$.fs.write` (only the state folder), `$.prompt.submit` (the continue message and the turn-end ask), `$.session.compact`, `$.session.id`, `$.session.surfaces`, `$.session.usage`, `$.tool.register` (`compact_now`), `$.ui.toast`
-- **Environment reads:** `CLAUDE_STATE_DIR`, `HOME`, `USERPROFILE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, `COMPACT_WHEN_READY_OFF`, `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `COMPACT_WHEN_READY_AUTO_ORIG`, `CLAUDE_DELEGATE_LEG`, `CLAUDE_HARNESS_PROBE`. The last two are markers my own wrapper scripts set; elsewhere they do nothing.
-- **Environment writes:** `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (the auto line) and `COMPACT_WHEN_READY_AUTO_ORIG` (what it held before, so it can be put back after a reload).
-
-It makes no network requests and no model calls, and starts no processes.
+- **Hooks:**
+  - `session.start` reads the settings and starts the mod's timer.
+  - `tool.call` adds the notes to tool results and answers `compact_now`.
+  - `turn.complete` runs a queued compaction, or asks for one past the strict line.
+  - `session.compact` only notices that a compaction happened, so the notes start over. It passes the event on unchanged and never blocks a compaction.
+  - `session.end` clears the queued state.
+- **The one tool call it answers itself** is its own `compact_now` (`$.tool.register`). It queues the compaction and tells Claude to end the turn, and it refuses the call from a subagent. Every other tool call goes to its tool unchanged; past the soft or strict line, the mod adds one note to the result.
+- **Files it writes** (`$.fs.write`): only the queued flag and the log in its state folder (see [Files it writes](#files-it-writes)). The flag is the one file meant for other tools to read: a Stop hook should stay quiet while it is set. The mod never writes a settings, instructions, start-up or build file.
+- **Environment variables it sets** (`$.env.set`), in Claude Code's own process, never in a settings file:
+  - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`: the auto-compact line (`auto_percent`, 70 by default).
+  - `COMPACT_WHEN_READY_AUTO_ORIG`: what that variable held before the mod set it, so turning the mod off puts it back, also after a reload.
+- **Prompts it submits** (`$.prompt.submit`) go into the same session, as if you had typed them. There are two:
+  - After a compaction it ran: *"[compact-when-ready] The conversation was just compacted at your request (context had reached 61%). Your handoff: \<the path Claude gave compact_now\>. Read it first, then carry on exactly where you left off, with the next step it names. If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work."*
+  - When a turn ends past the strict line without a compaction: *"[compact-when-ready] Your last turn ended with context at 63% of the window (the line is 60%). Compact before anything else, in this order:"*, then four numbered steps: finish only the current step, save (your `save_step` command, or a handoff file), call `compact_now`, end the reply.
+  - They hold only the mod's own text, the context percentage, the lines, your save command and the handoff path. They contain no other conversation text, and no address to send anything to.
+- **Slash command it runs** (`$.command.run`): only `/compact`. It runs it only where Claude Code refuses a direct compaction (the desktop app's Code tab), when the turn in which Claude called `compact_now` ends. Its instructions: *"Keep what the next turn needs to continue: \<what Claude asked to keep\>. The full state is saved in \<handoff path\>; name that path in the summary."* Elsewhere it compacts directly with `$.session.compact`, with the same instructions.
+- **What it reads:**
+  - the context percentage and token counts (`$.session.usage`), whether anything is drawn (`$.session.surfaces`), the session id, and its own state files
+  - environment variables:
+    - `CLAUDE_STATE_DIR`, `HOME` and `USERPROFILE`, to find the state folder
+    - `CLAUDE_CODE_ENTRYPOINT`, `CLAUDECODE` and `CLAUDE_CODE_CHILD_SESSION`, to tell a desktop chat from a script run
+    - `COMPACT_WHEN_READY_OFF`
+    - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` and `COMPACT_WHEN_READY_AUTO_ORIG`, for the auto line
+    - `CLAUDE_DELEGATE_LEG` and `CLAUDE_HARNESS_PROBE`, markers my own wrapper scripts set; elsewhere they do nothing
+  - It reads no keys, tokens or other credentials. The only conversation text it reads is the two fields Claude passes to `compact_now`.
+- **Other calls:** `$.clock.every` and `$.clock.now` run its timer. `$.ui.toast` shows a short notice when something fails.
 
 ## Tested
 
@@ -113,3 +135,9 @@ It makes no network requests and no model calls, and starts no processes.
 ## License
 
 MIT, Martin Lipp ([LippInc](https://github.com/LippInc)). Not affiliated with Anthropic. If it misbehaves on your setup, an issue saying what happened is the most useful thing you can send. The session's `.log.json` helps.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/LippInc/compact-when-ready/main/docs/stamp-dark.svg">
+  <img alt="" src="https://raw.githubusercontent.com/LippInc/compact-when-ready/main/docs/stamp-light.svg" width="64">
+</picture> made by <a href="https://wayflare.eu">Wayflare</a>
+
