@@ -94,3 +94,23 @@ Live re-run of Run A (soft 40, strict 60, window 30000, `config.json`, server + 
 History read back from `/session/<id>/message`: 8 assistant steps (4231 -> 16890 tokens), `compact_now`, a `summary: true` message, the plugin's continue message ("... compacted at your request (context had reached 55%). Your handoff: ...\out6\handoff.md ..."), 8 more steps (5090 -> 17734), final text `ALL DONE`. Output check: last word of line 120 of each notes file against `out6/notesN.out`: 6 of 6 correct (iota, gamma, tau, pi, tau, omicron).
 
 Differences from the first Run A, stated plainly: only one compaction cycle this time (the context peaked at 17734 of 30000, below the 60% line, so there was no second cycle); and the `opencode run --attach` client process exited (exit 0) after 17 s, at the first idle, before the compaction and the continue message happened. The server carried on without it and finished (session still busy at 21:06:51, idle by 21:06:59). The first Run A's CLI output (`logs/live2.ndjson`) ends the same way, so this is the known "the client leaves at the first idle" behaviour, not new; the proof of the whole loop is the history read from the local server. The agent passthrough was not exercised live with a non-default agent (the session ran under `build`, the continue message's agent was `build`); it is covered by the unit tests only. F2 and F3 are unit-tested only (no live cancel, no live failing continue).
+
+## The floor guard, live (2026-10-18, 01:27-01:30 UTC)
+
+Same isolation, CLI and free model as above (`opencode serve` + one `run --attach`, stdin from /dev/null, 2 opencode processes at most, stopped afterwards). Plugin options `soft 50, strict 55, window 10000`, so that OpenCode's own start (about 4.2K tokens) sits near the lines; fresh project `proj-floor-guarded/` with the same six notes files. Session `ses_eb36113ecffeDFZKaUnMyrhUdo`:
+
+```
+01:27:26 start       soft 50 strict 55 window 10000
+01:27:43 note        strict 81      (each notes file is about 4K tokens: 40 points of this small window)
+01:28:05 note        strict 123
+01:28:14 queued      131
+01:28:33 compacted   continued
+01:28:40 high-floor  floor 47 -> lines 57/57 (the soft one is off)
+01:28:46 note        strict 91
+01:29:26 note        strict 132
+01:29:30 queued      137
+01:29:50 compacted   continued
+01:29:58 high-floor  floor 47 -> lines 57/57
+```
+
+Result: 6 of 6 outputs correct, two compactions. What this shows: the guard reads the floor from the real events and lifts the lines, and the loop still runs. What it does not show: a loop prevented. With a 47% floor and a 50% soft line, the old code would not have noted right after the compaction either, so no unguarded control was run (one CLI run used). The loop it prevents was seen and fixed on Claude Code (three compactions in two minutes, then one with the guard); here the unit tests cover it (42 tests; six planted breaks of the guard each fail at least one).

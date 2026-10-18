@@ -23,6 +23,9 @@ import { join } from "node:path"
 //      session (`client.session.summarize`), then send the continue prompt (`client.session.promptAsync`).
 //      One compaction per request; a failed summarize is retried once, then the plugin gives up for that cycle.
 //   5. OpenCode's own auto-compaction is never touched: it stays the backstop.
+//   6. After any compaction the first percent seen is the floor: for that cycle both lines sit at least FLOOR_GAIN
+//      points above it (logged once a cycle, one toast a session when that moves a line), so a session whose fixed
+//      part (system prompt, tools, AGENTS.md) is near the lines is not asked to compact again and again.
 //
 // Files written: one JSON-lines log per session in <state>/compact-when-ready-opencode/. No network calls of its own.
 
@@ -33,6 +36,9 @@ const DEFAULT_STRICT = 60
 const REMIND_STEP = 2 // percentage points between repeated strict notes
 const SUMMARIZE_TRIES = 2 // the first try plus one retry
 const SUMMARIZE_TIMEOUT_MS = 10 * 60_000
+// how far above the floor the lines sit at least (the Claude Code mod 0.3.5 has the same rule: there a 90K-token
+// CLAUDE.md on a 200K window left 50-51% after each compaction, and the model compacted three times in two minutes)
+const FLOOR_GAIN = 10
 
 type Config = { soft: number; strict: number; window: number | undefined; off: boolean; logDir: string }
 type Job = { handoff: string; keep: string; percent: number }
@@ -55,6 +61,10 @@ type Sess = {
   agent: string // agent of the latest assistant message ("" = unknown): the continue prompt runs under it
   newestCreated: number // created time of the newest assistant message seen, token-bearing or not
   errored: boolean // that newest message ended with an error (aborted, provider error, ...)
+  pctFloor: number // percent at the first message after the last compaction, -1 = none seen yet
+  floorNext: boolean // a compaction landed: the next message with tokens sets the floor
+  floorNoted: boolean // this floor's line move is logged
+  floorWarned: boolean // the toast about a floor near the lines went out (once a session)
 }
 
 // ---- options ---------------------------------------------------------------------------------------------------
@@ -162,6 +172,10 @@ const server: Plugin = async ({ client }, options) => {
         agent: "",
         newestCreated: 0,
         errored: false,
+        pctFloor: -1,
+        floorNext: false,
+        floorNoted: false,
+        floorWarned: false,
       }
       sessions.set(id, s)
     }
@@ -195,7 +209,15 @@ const server: Plugin = async ({ client }, options) => {
     s.floor = s.maxCreated // anything created up to now is from before the compaction
     s.lastCreated = 0
     s.errored = false
+    s.floorNext = true // the first message with tokens after it is the floor
   }
+
+  // The lines this cycle: as set, but at least FLOOR_GAIN points above the floor (a soft line lifted to the strict
+  // one is off, as when set that way).
+  const linesFor = (s: Sess): { soft: number; strict: number } =>
+    s.pctFloor < 0
+      ? { soft: cfg.soft, strict: cfg.strict }
+      : { soft: Math.max(cfg.soft, s.pctFloor + FLOOR_GAIN), strict: Math.max(cfg.strict, s.pctFloor + FLOOR_GAIN) }
 
   const windowFor = async (providerID: string, modelID: string): Promise<{ size: number; source: string } | undefined> => {
     if (cfg.window) return { size: cfg.window, source: "option" }
@@ -331,15 +353,16 @@ const server: Plugin = async ({ client }, options) => {
   // Which note (if any) goes out now for this session. Updates the cycle state when it returns a note.
   const noteFor = (s: Sess): { kind: "soft" | "strict"; text: string } | undefined => {
     if (s.pct < 0 || s.gaveUp) return undefined
-    if (s.pct < cfg.strict) {
-      if (s.softNoted || cfg.soft >= cfg.strict || s.pct < cfg.soft) return undefined
+    const l = linesFor(s)
+    if (s.pct < l.strict) {
+      if (s.softNoted || l.soft >= l.strict || s.pct < l.soft) return undefined
       s.softNoted = true
-      return { kind: "soft", text: softText(s.pct, cfg.strict) }
+      return { kind: "soft", text: softText(s.pct, l.strict) }
     }
     if (s.lastNote >= 0 && s.pct < s.lastNote + REMIND_STEP) return undefined
     s.softNoted = true // past the strict line the soft note is moot
     s.lastNote = s.pct
-    return { kind: "strict", text: strictText(s.pct, cfg.strict) }
+    return { kind: "strict", text: strictText(s.pct, l.strict) }
   }
 
   const onAssistantMessage = async (info: any) => {
@@ -373,6 +396,26 @@ const server: Plugin = async ({ client }, options) => {
     s.lastCreated = created
     s.maxCreated = Math.max(s.maxCreated, created)
     s.pct = (total / w.size) * 100
+    if (s.floorNext) {
+      s.floorNext = false
+      s.pctFloor = s.pct
+      s.floorNoted = false
+    }
+  }
+
+  // One log line a floor, one toast a session, when the floor moves a line.
+  const noteFloor = async (s: Sess) => {
+    const l = linesFor(s)
+    if (s.floorNoted || s.pctFloor < 0 || (l.soft === cfg.soft && l.strict === cfg.strict)) return
+    s.floorNoted = true
+    log(s.id, "high-floor", { floor: Math.round(s.pctFloor), soft: Math.round(l.soft), strict: Math.round(l.strict) })
+    if (s.floorWarned) return
+    s.floorWarned = true
+    const next = Math.round(l.soft < l.strict ? l.soft : l.strict)
+    await toast(
+      `context was still at ${Math.round(s.pctFloor)}% right after compacting (this session's fixed part, such as the system prompt, tools and AGENTS.md, takes that much), so the next note waits for ${next}%`,
+      "info",
+    )
   }
 
   return {
@@ -447,9 +490,11 @@ const server: Plugin = async ({ client }, options) => {
           output.output = `${output.output ?? ""}\n\n${QUEUED_NOTE}`
           return
         }
+        if (s.pct >= 0 && !s.gaveUp) await noteFloor(s)
         const note = noteFor(s)
         if (!note) return
-        log(s.id, "note", { which: note.kind, percent: Math.round(s.pct), soft: cfg.soft, strict: cfg.strict })
+        const l = linesFor(s)
+        log(s.id, "note", { which: note.kind, percent: Math.round(s.pct), soft: Math.round(l.soft), strict: Math.round(l.strict) })
         output.output = `${output.output ?? ""}\n\n${note.text}`
       } catch (err) {
         log("plugin", "hook-error", { error: String(err).slice(0, 300) })

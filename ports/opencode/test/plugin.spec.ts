@@ -367,6 +367,7 @@ describe("cycle", () => {
     await t.hooks.event({ event: { type: "session.compacted", properties: { sessionID: SID } } })
     await t.assistant(9000, { summary: true }) // the summary call's own tokens must not count
     expect(await t.toolCall()).toBe("file contents")
+    await t.assistant(500) // the first message after it: the floor
     await t.assistant(5200)
     expect(await t.toolCall()).toContain("comfortable moment") // soft note again in the new cycle
     expect(kinds()).toContain("compacted-elsewhere")
@@ -378,6 +379,7 @@ describe("cycle", () => {
     await t.compactNow()
     await t.idle()
     expect(await t.toolCall()).toBe("file contents") // percent unknown until the next assistant message
+    await t.assistant(500) // the first message after it: the floor
     await t.assistant(5100)
     expect(await t.toolCall()).toContain("comfortable moment")
   })
@@ -481,7 +483,8 @@ describe("after the review fixes", () => {
     expect(t.calls.filter((c) => c.name === "promptAsync").length).toBe(2)
     expect(kinds()).toContain("continue-gave-up")
     expect(t.names()).toContain("toast")
-    await t.assistant(5100) // new cycle
+    await t.assistant(500) // new cycle; the first message after the compaction is the floor
+    await t.assistant(5100)
     expect(await t.toolCall()).toContain("comfortable moment")
   })
 
@@ -529,5 +532,66 @@ describe("after the review fixes", () => {
     await t.assistant(5100)
     await t.assistant(5200)
     expect(t.names().filter((n) => n === "providers").length).toBe(1)
+  })
+})
+
+// A session whose fixed part (system prompt, tools, AGENTS.md) sits near the lines: a compaction frees almost nothing,
+// so for that cycle the lines sit ten points above where it left the context (the Claude Code mod 0.3.5 rule).
+describe("floor guard", () => {
+  const floors = () => logLines().filter((l) => l.kind === "high-floor")
+
+  test("a compaction that leaves 51% lifts both lines to 61% for that cycle, with one toast", async () => {
+    const t = await make()
+    await t.assistant(5200)
+    expect(await t.toolCall()).toContain("comfortable moment")
+    await t.compactNow()
+    await t.idle()
+    await t.assistant(5100) // the compaction freed almost nothing
+    expect(await t.toolCall()).toBe("file contents") // no soft note at 51
+    await t.assistant(6000)
+    expect(await t.toolCall()).toBe("file contents") // no strict note at 60 either
+    await t.assistant(6100)
+    const out = await t.toolCall()
+    expect(out).toContain("Save and compact now")
+    expect(out).toContain("61%")
+    expect(floors().map((l) => [l.floor, l.soft, l.strict])).toEqual([[51, 61, 61]])
+    expect(t.calls.filter((c) => c.name === "toast").length).toBe(1)
+    expect(JSON.stringify(t.calls.find((c) => c.name === "toast")?.args)).toContain("the next note waits for 61%")
+  })
+
+  test("a compaction that leaves 40% or less keeps the lines as set, with no toast", async () => {
+    const t = await make()
+    await t.assistant(6100)
+    await t.compactNow()
+    await t.idle()
+    await t.assistant(4000) // 40 + 10 is the soft line itself
+    expect(await t.toolCall()).toBe("file contents")
+    await t.assistant(5000)
+    expect(await t.toolCall()).toContain("comfortable moment")
+    expect(floors()).toEqual([])
+    expect(t.names()).not.toContain("toast")
+  })
+
+  test("OpenCode's own compaction sets the floor too; a second cycle near the lines logs again, with no second toast", async () => {
+    const t = await make()
+    await t.assistant(7000)
+    await t.hooks.event({ event: { type: "session.compacted", properties: { sessionID: SID } } })
+    await t.assistant(9000, { summary: true }) // the summary call's own tokens never set the floor
+    await t.assistant(5500)
+    expect(await t.toolCall()).toBe("file contents") // both lines at 65: the soft one is off
+    await t.assistant(6500)
+    expect(await t.toolCall()).toContain("65%")
+    await t.hooks.event({ event: { type: "session.compacted", properties: { sessionID: SID } } })
+    await t.assistant(5600)
+    expect(await t.toolCall()).toBe("file contents")
+    expect(floors().map((l) => l.floor)).toEqual([55, 56])
+    expect(t.calls.filter((c) => c.name === "toast").length).toBe(1)
+  })
+
+  test("before any compaction there is no floor, even when the session starts high", async () => {
+    const t = await make()
+    await t.assistant(5100) // a session that starts at 51%
+    expect(await t.toolCall()).toContain("comfortable moment")
+    expect(floors()).toEqual([])
   })
 })
