@@ -13,9 +13,15 @@ import type { PluginOptions, Register, Timer } from 'claude-code'
 //   settings files, which stays as the fallback when the mod is off. 0 leaves Claude Code's own setting alone; off
 //   (config.json) or 0 puts back what the process had before the mod first set it (kept in CATNAP_AUTO_ORIG,
 //   so a reload still knows it). Only in a person's session, like the notes.
-// "Save" is the save_step option when it is set (a command such as /save-before-compact), else a plain instruction to
-// write a handoff file. When a turn that called compact_now ends, this mod compacts the session and queues a prompt
-// that makes the model continue.
+// "Save" is the save_step option when it is set (a command such as /save-before-compact, which writes a handoff file
+// whose path Claude passes to compact_now), else Claude passes its handoff to compact_now itself, as `note`: one call
+// instead of a file write plus the call. When a turn that called compact_now ends, this mod compacts the session and
+// queues a prompt that makes the model continue, with the handoff's text in it (the note, or the file read back, cut
+// at PASTE_MAX). Asking Claude to read the file was not enough: in 10 of 10 compactions of a 2026-10-18 benchmark it
+// carried on from the compaction summary and never opened it.
+// The model request that would follow compact_now in its turn could only end the reply (the tool result says so), yet
+// it re-reads the whole context; a turn.step hook answers that one request itself with a one-line reply, so the turn
+// ends at once. Only that turn's next request in the main loop, once.
 // How it compacts: $.session.compact between turns. A host that refuses that call (the desktop app's Code tab runs the
 //   engine as an SDK session: "not available in a headless (-p / SDK) session", seen live 2026-10-13) gets a
 //   /compact run through $.command.run instead (also after FALLBACK_AFTER refusals of any kind; a plugin's prompt may
@@ -76,11 +82,16 @@ const DROP_POINTS = 20
 // almost nothing and each note would ask for another one (live 2026-10-18: a 90K-token CLAUDE.md on a 200K window left
 // 50-51% after each compaction, and Claude compacted twice in under a minute and queued a third)
 const FLOOR_GAIN = 10
+// the most of a handoff the continue prompt carries (about 8K tokens); a longer one is cut there, and the prompt says
+// where the rest is
+export const PASTE_MAX = 32_000
 // $.session.compact's refusal where only a /compact run can compact (the desktop app, live 2026-10-13)
 export const isHeadlessRefusal = (err: unknown) => /not available in a headless/i.test(String(err))
 
 type Config = { soft: number; threshold: number; auto: number; off: boolean }
-type Job = { handoff: string; keep: string; percent: number }
+// handoff: the file it is saved in ('' when there is none); note: the handoff text Claude passed itself ('' when it
+// passed a path only)
+type Job = { handoff: string; note: string; keep: string; percent: number }
 
 export const stateDirFor = (stateEnv: string | undefined, home: string | undefined): string => {
   const base = stateEnv || (home ? `${home}/.claude/state` : '')
@@ -126,27 +137,33 @@ export const parseConfig = (texts: readonly (string | null)[], base?: Config): C
 export const autoTarget = (c: Config, orig: string): { value: string | undefined; restore: boolean } =>
   c.off || c.auto === 0 ? { value: orig === '' ? undefined : orig, restore: true } : { value: String(c.auto), restore: false }
 
-// How to save, in the notes: the save_step command when one is set, else a plain handoff file.
+// How to save, in the notes: the save_step command when one is set (it writes a handoff file), else the handoff goes
+// straight into compact_now's `note`.
+const HANDOFF_PARTS = 'the task, what is done, the next step, open decisions and the files that matter'
 const saveHow = (save: string): string =>
   save
     ? `run ${save} (it writes the handoff file and anything else not yet saved)`
-    : 'write a handoff file, or update the one this project already uses: the task, what is done, the next step, open decisions and the files that matter'
+    : `write your handoff (${HANDOFF_PARTS}) straight into the note of the compaction call below; no separate file is needed`
 
-const saveShort = (save: string): string => (save ? `run ${save}` : 'save the handoff file')
+const saveShort = (save: string): string => (save ? `run ${save}` : 'write your handoff')
+
+// What compact_now gets: the handoff file's path when a save step wrote one, else the handoff itself as `note`.
+const callWith = (save: string): string =>
+  save ? "that handoff file's path as handoff" : 'your handoff as note'
 
 const steps = (tool: string, save: string): string =>
   [
     '1. Finish only the step you are on; start nothing new.',
     `2. Save everything a fresh start would need: ${saveHow(save)}.`,
-    `3. Call ${tool} with that handoff file's path and what the summary must keep (the task, the next step, open decisions).`,
-    '4. End your reply right there: no more tool calls and no closing summary. The compaction runs once your turn ends, and a message then tells you to continue.',
+    `3. Call ${tool} with ${callWith(save)}, and what the summary must keep (the task, the next step, open decisions) as keep.`,
+    '4. End your reply right there: no more tool calls and no closing summary. The compaction runs once your turn ends, and a message then gives you your handoff back and tells you to continue.',
   ].join('\n')
 
 export const softText = (p: number, t: number, tool: string, save = '') =>
   [
     `[${NAME}] Context is at ${p}% of the window. Compact at a comfortable moment before ${t}%, where you will be told to compact at once:`,
     '- Finish the piece you are on, and finish it properly (for example the page, section or feature: done, checked, saved). Do not start the next big piece before compacting.',
-    `- At that clean break: ${saveShort(save)}, call ${tool} with the handoff file's path and what the summary must keep, then end your reply.`,
+    `- At that clean break: ${saveShort(save)}, call ${tool} with ${callWith(save)} and what the summary must keep, then end your reply.`,
     '- If your reply is ending anyway (the work is done, or you are waiting on the user), that is a good moment too.',
   ].join('\n')
 
@@ -159,13 +176,41 @@ export const askText = (p: number, t: number, tool: string, save = '') =>
 const QUEUED_NOTE =
   `[${NAME}] Compaction is queued. End your reply now: no more tool calls and no more text. It runs as soon as the turn ends, and a message then tells you to continue.`
 
-const continueText = (job: Job) =>
-  `[${NAME}] The conversation was just compacted at your request (context had reached ${job.percent}%). ` +
-  `Your handoff: ${job.handoff}. Read it first, then carry on exactly where you left off, with the next step it names. ` +
+// The reply catnap gives in Claude's place to the one model request after compact_now (see the header).
+export const NAP_REPLY = `[${NAME}] Compacting now; Claude carries on right after.`
+
+const CARRY_ON =
+  'Carry on exactly where you left off, with the next step it names. ' +
   'If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work.'
 
+// The continue prompt. `text` is the handoff to give back (the note, or the file read back); null when the file could
+// not be read, and then the prompt names the file, as before 0.3.6. `cut`: the text was cut at PASTE_MAX.
+export const continueText = (job: Job, text: string | null, cut = false) => {
+  const head = `[${NAME}] The conversation was just compacted at your request (context had reached ${job.percent}%).`
+  if (text === null) return `${head} Your handoff: ${job.handoff}. Read it first, then ${CARRY_ON.charAt(0).toLowerCase()}${CARRY_ON.slice(1)}`
+  const saved = job.handoff ? ` (saved in ${job.handoff})` : ''
+  const rest = cut ? `\n[cut here at ${PASTE_MAX} characters: read the rest in ${job.handoff} before you go on]` : ''
+  return `${head} Here is the handoff you wrote just before it${saved}:\n\n<handoff>\n${text}${rest}\n</handoff>\n\n${CARRY_ON}`
+}
+
 const instructionsFor = (job: Job) =>
-  `Keep what the next turn needs to continue: ${job.keep}. The full state is saved in ${job.handoff}; name that path in the summary.`
+  `Keep what the next turn needs to continue: ${job.keep}.` +
+  (job.handoff ? ` The full state is saved in ${job.handoff}; name that path in the summary.` : '') +
+  ' Claude gets its own handoff back, word for word, right after this compaction.'
+
+// The handoff to give back after the compaction: the note, else the file, cut at PASTE_MAX; null when there is no
+// note and the file can't be read. A note is cut only when a file holds the whole of it.
+export const handoffText = async (job: Job, read: (path: string) => Promise<string | null | undefined>) => {
+  let text = job.note
+  if (!text) {
+    if (!job.handoff) return { text: null, cut: false }
+    const got = await read(job.handoff).catch(() => null)
+    if (typeof got !== 'string' || got.trim() === '') return { text: null, cut: false }
+    text = got.trim()
+  }
+  if (text.length <= PASTE_MAX || !job.handoff) return { text, cut: false }
+  return { text: text.slice(0, PASTE_MAX), cut: true }
+}
 
 export const register: Register = (on, options) => {
   const { base, save } = fromOptions(options)
@@ -174,6 +219,8 @@ export const register: Register = (on, options) => {
   let sid = ''
   let desktopChat = false // a desktop app chat, not a process started from inside one: acts with no window attached
   let pending: Job | null = null // compact_now was called; runs when the turn ends
+  let turnNow = '' // the main loop's running turn, from turn.start
+  let napTurn = '' // the turn that called compact_now: the mod answers its next model request (see the header)
   let due = false // the turn ended: the timer may compact now
   let ask: string | null = null // a turn-end ask the timer submits
   let softNoted = false // the soft note went out this cycle
@@ -216,6 +263,7 @@ export const register: Register = (on, options) => {
   const reset = () => {
     if (pending) flagDirty = true
     pending = null
+    napTurn = ''
     due = false
     ask = null
     softNoted = false
@@ -316,16 +364,25 @@ export const register: Register = (on, options) => {
     await $.tool.register({
       name: TOOL,
       description:
-        'Compacts this conversation once your turn ends, then sends you a message to continue. Call it only after everything ' +
-        `needed to pick the work up again is saved to files (${save ? `normally by ${save}` : 'a handoff file'}). After calling it, ` +
-        'end your reply at once: no more tool calls and no more text. Main conversation only.',
+        'Compacts this conversation once your turn ends, then gives you your handoff back and tells you to continue. ' +
+        (save
+          ? `Call it once everything needed to pick the work up again is saved (normally by ${save}), with the handoff file's path. `
+          : `Call it with your handoff as note (${HANDOFF_PARTS}); no separate file is needed. `) +
+        'After calling it, end your reply at once: no more tool calls and no more text. Main conversation only.',
       inputSchema: {
         type: 'object',
         properties: {
-          handoff: { type: 'string', description: 'Path of the handoff file you just saved.' },
+          note: {
+            type: 'string',
+            description: `Your handoff, written for yourself right after the compaction: ${HANDOFF_PARTS}. catnap saves it and gives it back to you word for word.`,
+          },
+          handoff: {
+            type: 'string',
+            description: 'Path of a handoff file you saved (for example by a save command), if you saved one. catnap gives its text back to you after the compaction.',
+          },
           keep: { type: 'string', description: 'What the compaction summary must keep: the task, the next step, open decisions.' },
         },
-        required: ['handoff', 'keep'],
+        required: ['keep'],
       },
       isDeferred: false,
     })
@@ -421,8 +478,9 @@ export const register: Register = (on, options) => {
         if (landedJob) {
           const job = landedJob
           landedJob = null
-          void $.prompt.submit({ text: continueText(job) })
-          log('continue-submitted')
+          const back = await handoffText(job, path => $.fs.read(path))
+          void $.prompt.submit({ text: continueText(job, back.text, back.cut) })
+          log('continue-submitted', { handoffChars: back.text?.length ?? null, cut: back.cut })
         }
         if (toast !== null) {
           const text = toast
@@ -453,22 +511,63 @@ export const register: Register = (on, options) => {
   // types list only the tools known when they were written). It must read mcp__<NAME>__<TOOL>: see NAME above.
   on('tool.call', { tool: /^mcp__catnap__compact_now$/ }, async ($, e) => {
     if (e.agentId) return { deny: 'Only the main conversation can compact itself; a subagent cannot.' }
-    const input = e as unknown as { handoff?: unknown; keep?: unknown }
-    const handoff = String(input.handoff ?? '').trim()
+    const input = e as unknown as { note?: unknown; handoff?: unknown; keep?: unknown }
+    const note = String(input.note ?? '').trim()
+    let handoff = String(input.handoff ?? '').trim()
     const keep = String(input.keep ?? '').trim()
-    if (!handoff) return { deny: `Save everything first (${saveShort(save)}), then call again with the handoff file path.` }
-    pending = { handoff, keep: keep || 'the current task and its next step', percent: (await $.session.usage()).context.percent ?? -1 }
+    if (!note && !handoff)
+      return {
+        deny: save
+          ? `Save everything first (run ${save}), then call again with the handoff file's path as handoff.`
+          : `Write your handoff first and pass it as note (${HANDOFF_PARTS}), then call again.`,
+      }
+    if (note && !handoff && stateDir) {
+      // a copy on disk: for a person to look at, and for the continue prompt to point at if the note is cut
+      const path = `${stateDir}/${sid}.handoff.md`
+      try {
+        await $.fs.write(path, `${note}\n`)
+        handoff = path
+      } catch {
+        // the note still comes back from memory
+      }
+    }
+    pending = {
+      handoff,
+      note,
+      keep: keep || 'the current task and its next step',
+      percent: (await $.session.usage()).context.percent ?? -1,
+    }
+    napTurn = turnNow
     due = false
     retries = 0
     gaveUp = false // a call of the model's own is a fresh try
     flagDirty = true
-    log('queued', { handoff, percent: pending.percent })
+    log('queued', { handoff, noteChars: note.length, percent: pending.percent })
     return {
       result:
         'Compaction queued. End your reply now: write nothing more and call no more tools. ' +
         'The conversation is compacted as soon as this turn ends, and a message then tells you to continue.',
     }
   }).catch(() => ({ deny: 'compact_now failed inside the mod. Your work is saved; run /compact yourself, or call it again.' }))
+
+  // The main loop's running turn, so a compact_now call knows which turn it belongs to.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) turnNow = e.turnId
+    return next(e)
+  })
+
+  // The model request right after compact_now could only end the reply (its tool result says so), yet it re-reads the
+  // whole context: the mod answers that one request with NAP_REPLY instead, and the turn ends. Only in the turn that
+  // called compact_now (turn.complete clears it), in the main loop, once; every other request goes to the model, and a
+  // hook that fails here leaves the request to the model too.
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId !== undefined || !pending || !napTurn || e.turnId !== napTurn) return yield* next(e)
+    napTurn = ''
+    log('nap-reply', { step: e.index })
+    yield { kind: 'text', index: 0, text: NAP_REPLY }
+    yield { kind: 'stop', stopReason: 'end_turn', usage: null }
+    return { turnId: e.turnId, index: e.index, answer: NAP_REPLY, toolUses: [], stopReason: 'end_turn', usage: null }
+  })
 
   // Every other tool call goes to its tool; past the lines, the result gets a note.
   on('tool.call', async ($, e, next) => {
@@ -504,6 +603,7 @@ export const register: Register = (on, options) => {
     if (e.agentId) return r
     sid = await $.session.id()
     if (pending) {
+      napTurn = '' // the turn is over: no later request is answered in Claude's place
       // interrupted or errored: stay queued, it runs at the next turn that ends normally
       if (e.reason === 'answer') {
         due = true

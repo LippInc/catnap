@@ -259,6 +259,86 @@ test('AfterAgent with the flag: deny + reason + clearContext, then the flag is g
   assert.ok(readLog(dir).some(e => e.kind === 'cleared' && e.handoff === 'notes/handoff.md'))
 })
 
+// ---------- the handoff's text rides in the continue message ----------
+
+const OLD_REASON = file =>
+  `The conversation was just cleared at your request. Your handoff: ${file}. Read it first, then carry on exactly where you left off.`
+// queue a clear for `handoff` and return the AfterAgent reason; `cwd` is the folder the hook payload reports
+const clearReason = (handoff, cwd) => {
+  const dir = newDir()
+  hook(dir, afterModel(650_000, { cwd }))
+  hook(dir, compactNowTool(handoff, { cwd }))
+  const out = hook(dir, afterAgent({ cwd }))
+  assert.equal(out.decision, 'deny')
+  assert.deepEqual(out.hookSpecificOutput, { hookEventName: 'AfterAgent', clearContext: true })
+  return out.reason
+}
+const withHandoffFile = (name, text) => {
+  const work = newDir()
+  const file = path.join(work, name)
+  fs.writeFileSync(file, text)
+  return { work, file }
+}
+
+test('a readable handoff file: its text is in the message, "Read it first" is not', () => {
+  const text = 'Task: port the parser.\nDone: lexer.\nNext: write the tests.'
+  const { work, file } = withHandoffFile('handoff.md', `\n  ${text}\n\n`)
+  const reason = clearReason(file, work)
+  assert.equal(
+    reason,
+    'The conversation was just cleared at your request. ' +
+      `Here is the handoff you wrote just before it (saved in ${file}):\n\n<handoff>\n${text}\n</handoff>\n\n` +
+      'Carry on exactly where you left off, with the next step it names. ' +
+      'If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work.',
+  )
+  assert.ok(reason.includes(`<handoff>\n${text}\n</handoff>`))
+  assert.ok(!reason.includes('Read it first'))
+})
+
+test('a missing handoff file: the old message, unchanged', () => {
+  const work = newDir()
+  const file = path.join(work, 'nope.md')
+  assert.equal(clearReason(file, work), OLD_REASON(file))
+})
+
+test('an empty (blank) handoff file: the old message, unchanged', () => {
+  const { work, file } = withHandoffFile('blank.md', ' \n\t\n')
+  assert.equal(clearReason(file, work), OLD_REASON(file))
+})
+
+test('a handoff path that is a folder (unreadable): the old message, unchanged', () => {
+  const work = newDir()
+  assert.equal(clearReason(work, work), OLD_REASON(work))
+})
+
+test('a handoff longer than 32,000 characters is cut there, with a line that names the file', () => {
+  const text = 'a'.repeat(32_000) + 'ZZZ-AFTER-THE-CUT'
+  const { work, file } = withHandoffFile('long.md', text)
+  const reason = clearReason(file, work)
+  assert.ok(reason.includes(`<handoff>\n${'a'.repeat(32_000)}\n[cut here at 32000 characters: read the rest in ${file} before you go on]\n</handoff>`))
+  assert.ok(!reason.includes('ZZZ-AFTER-THE-CUT'))
+  assert.ok(!reason.includes('Read it first'))
+})
+
+test('exactly 32,000 characters is not cut', () => {
+  const text = 'b'.repeat(32_000)
+  const { work, file } = withHandoffFile('edge.md', text)
+  const reason = clearReason(file, work)
+  assert.ok(reason.includes(`<handoff>\n${text}\n</handoff>`))
+  assert.ok(!reason.includes('[cut here'))
+})
+
+test('a relative handoff path is read from the folder the hook payload reports', () => {
+  const work = newDir()
+  fs.mkdirSync(path.join(work, 'notes'))
+  fs.writeFileSync(path.join(work, 'notes', 'h.md'), 'Next: relative step.')
+  const reason = clearReason('notes/h.md', work)
+  assert.ok(reason.includes('<handoff>\nNext: relative step.\n</handoff>'))
+  assert.ok(reason.includes('(saved in notes/h.md)'))
+  // the same relative path from another folder finds nothing: the old message
+  assert.equal(clearReason('notes/h.md', newDir()), OLD_REASON('notes/h.md'))
+})
+
 test('AfterAgent with stop_hook_active true does nothing and keeps the flag', () => {
   const dir = newDir()
   hook(dir, compactNowTool('h.md'))

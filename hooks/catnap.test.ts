@@ -1,7 +1,7 @@
 import type { On, RenderSurface } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
-import { NAME, autoTarget, isHeadlessRefusal, parseConfig } from './register'
+import { NAME, NAP_REPLY, PASTE_MAX, autoTarget, isHeadlessRefusal, parseConfig } from './register'
 
 // The tool's full name, spelled out here and NOT taken from register.ts, so a rename that reaches only one of the two
 // files shows up: the tests under "the name trap" at the end check it against what the engine says the plugin is called.
@@ -107,6 +107,7 @@ const world = (on: On, init: Partial<World> = {}, fixture: Record<string, string
   })
   on('tool.call', () => ({ result: 'ok', text: 'ok' }))
   on('turn.complete', () => ({ text: 'done' }))
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   const flag = () => {
     const hit = [...w.files].filter(([p]) => FLAG.test(slash(p))).pop() // the newest, whatever its slashes
@@ -134,7 +135,7 @@ test('at the soft line the soft note lands once, then the strict note at the lin
   const soft = (await $.tool.call(read)).context?.[0] ?? ''
   expect(soft).toMatch(/Context is at 50% of the window\. Compact at a comfortable moment before 60%/)
   expect(soft).toMatch(/Finish the piece you are on, and finish it properly/)
-  expect(soft).toMatch(/save the handoff file/)
+  expect(soft).toMatch(/write your handoff, call mcp__catnap__compact_now with your handoff as note/)
   expect(soft).not.toMatch(/save-before-compact/)
   expect(soft).toMatch(/compact_now/)
   expect(soft).not.toMatch(/do not wait for a better moment/)
@@ -191,7 +192,8 @@ test('past the line the note lands once, then again two points later', async ($,
   const first = await $.tool.call(read)
   expect(first.context?.[0] ?? '').toMatch(/Context is at 61% of the window \(the line is 60%\)/)
   expect(first.context?.[0] ?? '').toMatch(/do not wait for a better moment/)
-  expect(first.context?.[0] ?? '').toMatch(/write a handoff file, or update the one this project already uses/)
+  expect(first.context?.[0] ?? '').toMatch(/write your handoff \(the task, what is done, the next step, open decisions and the files that matter\) straight into the note/)
+  expect(first.context?.[0] ?? '').toMatch(/3\. Call mcp__catnap__compact_now with your handoff as note/)
   expect(first.context?.[0] ?? '').toMatch(/End your reply right there/)
   w.pct = 62
   expect((await $.tool.call(read)).context ?? []).toEqual([])
@@ -344,11 +346,12 @@ test('the config file switches it off and moves the line; a per-session file win
   expect((await $.tool.call(read)).context ?? []).toEqual([])
 })
 
-test('compact_now without a handoff path is refused', async ($, on) => {
-  world(on, { pct: 64 })
+test('compact_now with neither a note nor a handoff path is refused', async ($, on) => {
+  const { w } = world(on, { pct: 64 })
   await start($)
-  const r = await $.tool.call({ tool: TOOL, handoff: '  ', keep: 'k' } as never)
-  expect(r.deny ?? '').toMatch(/Save everything first/)
+  const r = await $.tool.call({ tool: TOOL, note: ' ', handoff: '  ', keep: 'k' } as never)
+  expect(r.deny ?? '').toMatch(/Write your handoff first and pass it as note/)
+  expect([...w.files.keys()].some(k => /handoff\.md$/.test(k))).toBe(false)
 })
 
 test('wrapper children (CLAUDE_DELEGATE_LEG) are never touched, even with a surface', async ($, on) => {
@@ -970,4 +973,135 @@ test('a /clear ends the floor: the next conversation in the same module starts w
   await $.session.end({ reason: 'clear', sessionId: 'sess-1', resume: undefined } as never)
   w.pct = 55
   expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 55% of the window\. Compact at a comfortable moment before 60%/)
+})
+
+// 0.3.6: the handoff comes back in the continue prompt itself, and the one request after compact_now is answered by
+// the mod. Before 0.3.6 the prompt only named the file and asked Claude to read it; in a 2026-10-18 benchmark Claude
+// never did (0 of 10 compactions), so the handoff turns were pure cost.
+
+const landed = async ($: Engine, clock: { advance: (ms: number) => Promise<void> }, turnId = 't1') => {
+  await $.turn.complete({ reason: 'answer', isAborted: false, turnId, answer: 'ok', durationMs: 1 })
+  await clock.advance(1600) // the timer compacts
+  await clock.advance(1600) // and sends the continue prompt
+}
+
+test('a note comes back word for word in the continue prompt, and a copy is saved in the state folder', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64 })
+  await start($)
+  const note = 'Task: tickets T01-T40.\nDone: T01-T09, tests green.\nNext: T10 (westbrook), then T11.'
+  const q = await $.tool.call({ tool: TOOL, note, keep: 'the ticket list' } as never)
+  expect(String(q.result)).toMatch(/Compaction queued\. End your reply now/)
+  const saved = [...w.files].find(([p]) => /state\/catnap\/sess-1\.handoff\.md$/.test(slash(p)))
+  expect(saved?.[1]).toBe(`${note}\n`)
+  await landed($, clock)
+  expect(w.compacts.length).toBe(1)
+  expect(w.compacts[0] ?? '').toMatch(/the ticket list/)
+  expect(w.compacts[0] ?? '').toMatch(/gets its own handoff back, word for word/)
+  expect(w.prompts.length).toBe(1)
+  const p = w.prompts[0] ?? ''
+  expect(p).toMatch(/^\[catnap\] The conversation was just compacted at your request \(context had reached 64%\)\. Here is the handoff you wrote just before it \(saved in .*sess-1\.handoff\.md\):/)
+  expect(p).toContain(`<handoff>\n${note}\n</handoff>`)
+  expect(p).toMatch(/Carry on exactly where you left off, with the next step it names\./)
+  expect(p).not.toMatch(/Read it first/)
+})
+
+test("a handoff file comes back word for word (a save step's file), and nothing is written beside it", async ($, on) => {
+  const { w, clock } = world(on, { pct: 64 })
+  w.files.set('C:/p/.claude/handoffs/x.md', 'RESUME - the mod build\nNext: step 3 of the plan\n')
+  await start($)
+  await $.tool.call({ tool: TOOL, handoff: 'C:/p/.claude/handoffs/x.md', keep: 'the mod build' } as never)
+  expect([...w.files.keys()].some(k => /handoff\.md$/.test(k))).toBe(false)
+  await landed($, clock)
+  const p = w.prompts[0] ?? ''
+  expect(p).toContain('Here is the handoff you wrote just before it (saved in C:/p/.claude/handoffs/x.md):')
+  expect(p).toContain('<handoff>\nRESUME - the mod build\nNext: step 3 of the plan\n</handoff>')
+  expect(w.compacts[0] ?? '').toMatch(/The full state is saved in C:\/p\/\.claude\/handoffs\/x\.md/)
+})
+
+test('a handoff file that cannot be read: the prompt names it and asks Claude to read it, as before', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64 })
+  await start($)
+  await $.tool.call({ tool: TOOL, handoff: 'C:/nowhere/h.md', keep: 'k' } as never)
+  await landed($, clock)
+  const p = w.prompts[0] ?? ''
+  expect(p).toMatch(/Your handoff: C:\/nowhere\/h\.md\. Read it first, then carry on exactly where you left off/)
+  expect(p).not.toContain('<handoff>')
+})
+
+test('a long handoff is cut at PASTE_MAX, and the prompt says where the rest is', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64 })
+  w.files.set('C:/p/long.md', `${'a'.repeat(PASTE_MAX)}TAIL-NOT-PASTED`)
+  await start($)
+  await $.tool.call({ tool: TOOL, handoff: 'C:/p/long.md', keep: 'k' } as never)
+  await landed($, clock)
+  const p = w.prompts[0] ?? ''
+  expect(p).toContain(`[cut here at ${PASTE_MAX} characters: read the rest in C:/p/long.md before you go on]`)
+  expect(p).not.toContain('TAIL-NOT-PASTED')
+  expect(p.length).toBeLessThan(PASTE_MAX + 1000)
+})
+
+// The model beneath every turn.step: records the requests that reached it.
+const model = (on: On) => {
+  const calls: { turnId: string; index: number }[] = []
+  on('turn.step', async function* ($, e) {
+    calls.push({ turnId: e.turnId, index: e.index })
+    yield { kind: 'text' as const, index: 0, text: 'from the model' }
+    yield { kind: 'stop' as const, stopReason: 'end_turn' as const, usage: null }
+    return { turnId: e.turnId, index: e.index, answer: 'from the model', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+  })
+  return calls
+}
+
+const step = async ($: Engine, turnId: string, index: number, agentId?: string) => {
+  const stream = $.turn.step({ turnId, index, model: 'claude-opus-5-5', messageCount: 10 + index, ...(agentId ? { agentId } : {}) })
+  const texts: string[] = []
+  // read by hand to the end: the generator's own return value is the step's result as the engine gets it
+  let r = await stream.next()
+  while (!r.done) {
+    if (r.value.kind === 'text') texts.push(r.value.text)
+    r = await stream.next()
+  }
+  return { text: texts.join(''), result: r.value }
+}
+
+test('the request after compact_now is answered by the mod, once, in that turn only', async ($, on) => {
+  const { clock } = world(on, { pct: 64 })
+  const calls = model(on)
+  await start($)
+  await $.turn.start({ text: 'go on', turnId: 't1' })
+  expect((await step($, 't1', 0)).text).toBe('from the model') // nothing queued: the model answers
+  await $.tool.call({ tool: TOOL, note: 'n', keep: 'k' } as never)
+  const nap = await step($, 't1', 1)
+  expect(nap.text).toBe(NAP_REPLY)
+  expect(nap.result.stopReason).toBe('end_turn')
+  expect(nap.result.toolUses).toEqual([])
+  expect(calls.length).toBe(1) // the request after compact_now never reached the model
+  expect((await step($, 't1', 2)).text).toBe('from the model') // once only
+  expect(calls.length).toBe(2)
+  await clock.advance(1600)
+})
+
+test('the mod answers no request of a subagent, of another turn, or after the turn ended', async ($, on) => {
+  const { clock } = world(on, { pct: 64 })
+  const calls = model(on)
+  await start($)
+  await $.turn.start({ text: 'go on', turnId: 't1' })
+  await $.tool.call({ tool: TOOL, note: 'n', keep: 'k' } as never)
+  expect((await step($, 't1', 1, 'agent-7')).text).toBe('from the model') // a subagent's request in that turn
+  expect((await step($, 't9', 0)).text).toBe('from the model') // another turn
+  await $.turn.complete({ reason: 'answer', isAborted: false, turnId: 't1', answer: 'ok', durationMs: 1 })
+  expect((await step($, 't1', 2)).text).toBe('from the model') // the turn is over
+  expect(calls.length).toBe(3)
+  await clock.advance(1600)
+})
+
+test('a compact_now denied (no handoff) leaves the next request to the model', async ($, on) => {
+  const { clock } = world(on, { pct: 64 })
+  const calls = model(on)
+  await start($)
+  await $.turn.start({ text: 'go on', turnId: 't1' })
+  await $.tool.call({ tool: TOOL, keep: 'k' } as never)
+  expect((await step($, 't1', 1)).text).toBe('from the model')
+  expect(calls.length).toBe(1)
+  await clock.advance(1600)
 })

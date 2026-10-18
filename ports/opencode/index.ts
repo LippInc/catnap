@@ -1,7 +1,7 @@
 import { type Plugin, type PluginOptions, tool } from "@opencode-ai/plugin"
-import { appendFileSync, mkdirSync } from "node:fs"
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 
 // compact-when-ready for OpenCode: the model compacts its own conversation at a clean break, then carries on.
 //
@@ -54,6 +54,7 @@ type Sess = {
   job: Job | null // the job being compacted now (for the compaction prompt hook)
   gaveUp: boolean
   child: boolean | undefined // a subagent session (has a parent): it gets no notes and cannot compact
+  dir: string // the session's folder, from session.get ("" = not known: the plugin's own folder is used)
   started: boolean
   lastCreated: number // created time of the newest assistant message counted
   floor: number // messages created at or before this are from before the last compaction
@@ -131,17 +132,42 @@ const QUEUED_NOTE =
 
 const QUEUED_RESULT = "Compaction queued. End your turn now."
 
-const continueText = (job: Job) =>
-  `[compact-when-ready] The conversation was just compacted at your request${job.percent >= 0 ? ` (context had reached ${Math.round(job.percent)}%)` : ""}. ` +
-  `Your handoff: ${job.handoff}. Read it first, then carry on exactly where you left off, with the next step it names. ` +
+// the most of a handoff the continue message carries (about 8K tokens); a longer one is cut there, and the message says
+// where the rest is
+const PASTE_MAX = 32_000
+
+const CARRY_ON =
+  "Carry on exactly where you left off, with the next step it names. " +
   "If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work."
+
+// The handoff file's text for the continue message, trimmed and cut at PASTE_MAX; null when the file is missing,
+// unreadable (a folder, no rights) or empty. A relative path is read from `dir`, the session's folder.
+const readHandoff = (handoff: string, dir: string): { text: string; cut: boolean } | null => {
+  try {
+    const text = readFileSync(resolve(dir || process.cwd(), handoff), "utf8").trim()
+    if (text === "") return null
+    return text.length <= PASTE_MAX ? { text, cut: false } : { text: text.slice(0, PASTE_MAX), cut: true }
+  } catch {
+    return null
+  }
+}
+
+// The continue message. With the handoff's text it carries the text itself (a model can skip "Read it first" and carry on
+// from the summary alone); when the file cannot be read it only names the file, as before.
+const continueText = (job: Job, dir: string) => {
+  const head = `[compact-when-ready] The conversation was just compacted at your request${job.percent >= 0 ? ` (context had reached ${Math.round(job.percent)}%)` : ""}.`
+  const back = readHandoff(job.handoff, dir)
+  if (!back) return `${head} Your handoff: ${job.handoff}. Read it first, then ${CARRY_ON.charAt(0).toLowerCase()}${CARRY_ON.slice(1)}`
+  const rest = back.cut ? `\n[cut here at ${PASTE_MAX} characters: read the rest in ${job.handoff} before you go on]` : ""
+  return `${head} Here is the handoff you wrote just before it (saved in ${job.handoff}):\n\n<handoff>\n${back.text}${rest}\n</handoff>\n\n${CARRY_ON}`
+}
 
 const instructionsFor = (job: Job) =>
   `Keep what the next turn needs to continue: ${job.keep}. The full state is saved in ${job.handoff}; name that path in the summary.`
 
 // ---- the plugin --------------------------------------------------------------------------------------------------
 
-const server: Plugin = async ({ client }, options) => {
+const server: Plugin = async ({ client, directory }, options) => {
   const cfg = readConfig(options, process.env)
   if (cfg.off) return {} // COMPACT_WHEN_READY_OFF: no tool, no hooks, no log
 
@@ -165,6 +191,7 @@ const server: Plugin = async ({ client }, options) => {
         job: null,
         gaveUp: false,
         child: undefined,
+        dir: "",
         started: false,
         lastCreated: 0,
         floor: -1,
@@ -243,6 +270,7 @@ const server: Plugin = async ({ client }, options) => {
     try {
       const res: any = await client.session.get({ path: { id: s.id } })
       s.child = Boolean(res?.data?.parentID)
+      if (typeof res?.data?.directory === "string") s.dir = res.data.directory
     } catch {
       s.child = false
     }
@@ -312,7 +340,7 @@ const server: Plugin = async ({ client }, options) => {
           body: {
             model: { providerID: s.providerID, modelID: s.modelID },
             ...(s.agent ? { agent: s.agent } : {}), // keep the user's agent (plan, a read-only custom one, ...)
-            parts: [{ type: "text", text: continueText(job) }],
+            parts: [{ type: "text", text: continueText(job, s.dir || directory || "") }],
           },
         })
         const bad = failure(res)

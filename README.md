@@ -26,7 +26,7 @@ You need Claude Code v2.1.287 or later, or v2.1.286 in the desktop app. Inside a
 
 **Try it now:** type `/catnap:compact`. Claude finishes the piece it is on, writes itself a handoff, compacts, and carries on by itself. That is the whole loop, on demand.
 
-**After that it runs on its own.** You see nothing until the context reaches 50%: about 100K tokens on a 200K window, about 500K on a 1M window, which can take hours. Then Claude finishes its piece, writes a handoff and compacts, and a message starting with `[catnap]` tells it to carry on. You don't type anything.
+**After that it runs on its own.** You see nothing until the context reaches 50%: about 100K tokens on a 200K window, about 500K on a 1M window, which can take hours. Then Claude finishes its piece, writes a handoff and compacts, and a message starting with `[catnap]` hands the handoff back and tells it to carry on. You don't type anything.
 
 **Your own numbers:** `/catnap:check` reads your local Claude Code logs (numbers only; nothing leaves your machine) and starts with a card like this one, from the author's last 30 days. To see yours before installing anything, run `npx github:LippInc/catnap` in any terminal (Node 18 or later):
 
@@ -44,7 +44,7 @@ If catnap saves you one "let me re-read where I was", a star helps other people 
 | :- | :- | :- |
 | When it compacts | when the window is nearly full | when Claude finishes the piece it is on, from 50% |
 | Compactions in the middle of a task | 78 of 82 auto-compactions in the author's last 30 days of logs | none so far in the author's own work: each one came at a moment Claude picked |
-| Right after | Claude re-reads files and works out where it was | Claude reads its own note and carries on |
+| Right after | Claude carries on from Claude Code's summary of the conversation | Claude also gets back the note it wrote at the clean break, word for word |
 | Context re-read in long sessions | baseline | **about 30% less** |
 
 <sub>Replay of the author's long sessions (over a whole month, short sessions included: 17.5%). Method, script and per-session table: [Numbers](#numbers) and [bench/REPLAY.md](bench/REPLAY.md). Yours: `/catnap:check`.</sub>
@@ -55,7 +55,7 @@ You set the lines; Claude picks the moment inside them. The mod compacts nothing
 
 - **At 50% context:** one note on a tool result. It tells Claude to finish the piece it is on properly (the page, the section, the feature), and to save and compact at that clean break.
 - **At 60%:** a strict note telling Claude to save and compact now. It repeats every 2 points until Claude does. If a turn ends past 60% without a compaction, catnap asks with a prompt of its own, again every 5 points.
-- **`compact_now`:** when that turn ends, catnap compacts the conversation and tells the summary to keep what Claude named. Then it sends Claude a message: *"The conversation was just compacted at your request ... Your handoff: <file>. Read it first, then carry on exactly where you left off."*
+- **`compact_now`:** Claude passes its handoff with the call (or the path of a handoff file your `save_step` wrote). When that turn ends, catnap compacts the conversation and tells the summary to keep what Claude named. Then it sends Claude a message with the handoff in it, word for word: *"The conversation was just compacted at your request ... Here is the handoff you wrote just before it: ... Carry on exactly where you left off, with the next step it names."*
 - **At 70%:** Claude Code's own auto-compact, the backstop if Claude hasn't compacted by then. Without catnap it would wait until the window is nearly full.
 
 All three lines are settings (below).
@@ -67,7 +67,7 @@ All three lines are settings (below).
 | `soft_percent` | 50 | Where the soft note comes. Set it at or above the strict line to turn the soft note off. |
 | `strict_percent` | 60 | Where the strict note comes. |
 | `auto_percent` | 70 | Where Claude Code's own auto-compact runs. Keep it above the strict line, or Claude Code compacts before Claude is asked to (the mod shows a toast if it isn't). `0` leaves Claude Code's own setting alone. |
-| `save_step` | empty | A command Claude runs to save its work before compacting, for example `/save-before-compact` from [save-before-compact](https://github.com/LippInc/save-before-compact). Left empty, Claude writes a handoff file itself. |
+| `save_step` | empty | A command Claude runs to save its work before compacting, for example `/save-before-compact` from [save-before-compact](https://github.com/LippInc/save-before-compact). Left empty, Claude passes its handoff to `compact_now` itself, and catnap keeps a copy (see [Files it writes](#files-it-writes)). |
 
 You can change these in `/config`, or from the shell:
 
@@ -105,9 +105,9 @@ A port needs four things from the agent's hooks: read the context percentage, ad
 
 ## FAQ
 
-- **Isn't this just auto-compact at 50%?** Most of the saving comes from compacting earlier, and a lower auto-compact setting does that too. But auto-compact lands mid-task almost every time (78 of 82 in the author's logs). catnap waits until Claude has finished the piece it is on and written its own note, so after the compaction it carries on instead of working out where it was.
+- **Isn't this just auto-compact at 50%?** Most of the saving comes from compacting earlier, and a lower auto-compact setting does that too. But auto-compact lands mid-task almost every time (78 of 82 in the author's logs). catnap waits until Claude has finished the piece it is on, so its compactions come between steps rather than in the middle of one, and after the compaction Claude gets back the note it wrote instead of relying on the summary alone.
 - **Why not fast-jev-compaction?** It changes what goes into the summary; catnap changes when the compaction happens. Using both together is untested.
-- **Does it cost tokens?** Each note costs a few hundred tokens, and Claude writes a handoff file. In return each compaction comes earlier and at a clean break; see [Numbers](#numbers) for what that saved in the author's sessions, and `/catnap:check` for yours.
+- **Does it cost tokens?** Each note costs a few hundred tokens. The nap itself costs one model call for the handoff, which re-reads the context (mostly from cache), on top of the compaction call every compaction makes; catnap answers the request after `compact_now` itself, so there is no extra call to end the reply. In return each compaction comes earlier and at a clean break; see [Numbers](#numbers) for what that saved in the author's sessions, and `/catnap:check` for yours.
 - **Can it compact at a bad moment?** Claude picks the moment, between your lines. If you catch it compacting at a moment you think is wrong, an issue with the session's `.log.json` is the most useful thing you can send.
 - **What if Claude Code does this itself one day?** Then uninstall catnap: `claude plugin uninstall catnap@lippinc`. Until then it works today.
 
@@ -126,6 +126,7 @@ A port needs four things from the agent's hooks: read the context percentage, ad
 All its files go in `~/.claude/state/catnap/`, or in `$CLAUDE_STATE_DIR/catnap/` if you set that variable:
 
 - **`<session id>.json`** is `{"pending": true, ...}` while a compaction is queued. Other tools may read it: if you have a Stop hook that keeps turns going, make it stay quiet while this file is fresh. Otherwise the turn never ends and the compaction never runs.
+- **`<session id>.handoff.md`** is the last handoff Claude passed to `compact_now` as a note, kept so you can look at it. The message after the compaction gives Claude the same text.
 - **`<session id>.log.json`** holds the last 60 events (notes, queued, compacted, gave up) for debugging. Only a person's session gets one, or a session where the mod did something.
 - **`config.json`** is optional. It overrides the options live, with no reload: `{"soft": 50, "threshold": 60, "auto": 70, "off": false}`. `threshold` is the strict line.
 
@@ -138,34 +139,37 @@ catnap is a mod: code that runs with your permissions. These are the calls `clau
 - **Hooks:**
   - `session.start` reads the settings and starts the mod's timer.
   - `tool.call` adds the notes to tool results and answers `compact_now`.
+  - `turn.start` notes which turn is running, so `compact_now` knows its turn.
+  - `turn.step` answers one model request itself: the one right after `compact_now` in that turn, which could only end the reply. It answers with one line (*"[catnap] Compacting now; Claude carries on right after."*), so the turn ends without reading the whole context once more. Every other request goes to the model unchanged.
   - `turn.complete` runs a queued compaction, or asks for one past the strict line.
   - `session.compact` only notices that a compaction happened, so the notes start over. It passes the event on unchanged and never blocks a compaction.
   - `session.end` clears the queued state.
 - **The one tool call it answers itself** is its own `compact_now` (`$.tool.register`). It queues the compaction and tells Claude to end the turn, and it refuses the call from a subagent. Every other tool call goes to its tool unchanged; past the soft or strict line, the mod adds one note to the result.
-- **Files it writes** (`$.fs.write`): only the queued flag and the log in its state folder (see [Files it writes](#files-it-writes)). The flag is the one file meant for other tools to read: a Stop hook should stay quiet while it is set. The mod never writes a settings, instructions, start-up or build file.
+- **Files it writes** (`$.fs.write`): only the queued flag, the log and the copy of Claude's handoff note in its state folder (see [Files it writes](#files-it-writes)). The flag is the one file meant for other tools to read: a Stop hook should stay quiet while it is set. The mod never writes a settings, instructions, start-up or build file.
 - **Environment variables it sets** (`$.env.set`), in Claude Code's own process, never in a settings file:
   - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`: the auto-compact line (`auto_percent`, 70 by default).
   - `CATNAP_AUTO_ORIG`: what that variable held before the mod set it, so turning the mod off puts it back, also after a reload.
 - **Prompts it submits** (`$.prompt.submit`) go into the same session, as if you had typed them. There are two:
-  - After a compaction it ran: *"[catnap] The conversation was just compacted at your request (context had reached 61%). Your handoff: \<the path Claude gave compact_now\>. Read it first, then carry on exactly where you left off, with the next step it names. If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work."*
+  - After a compaction it ran: *"[catnap] The conversation was just compacted at your request (context had reached 61%). Here is the handoff you wrote just before it (saved in \<file\>):"*, then the handoff itself between `<handoff>` tags (up to 32,000 characters; a longer one is cut there, with a line saying where the rest is), then *"Carry on exactly where you left off, with the next step it names. If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work."* If the handoff file can't be read, the message names the file and asks Claude to read it instead.
   - When a turn ends past the strict line without a compaction: *"[catnap] Your last turn ended with context at 63% of the window (the line is 60%). Compact before anything else, in this order:"*, then four numbered steps: finish only the current step, save (your `save_step` command, or a handoff file), call `compact_now`, end the reply.
-  - They hold only the mod's own text, the context percentage, the lines, your save command and the handoff path. They contain no other conversation text, and no address to send anything to.
+  - They hold only the mod's own text, the context percentage, the lines, your save command, the handoff path and the handoff Claude wrote. They contain no other conversation text, and no address to send anything to.
 - **Slash command it runs** (`$.command.run`): only `/compact`. It runs it only where Claude Code refuses a direct compaction (the desktop app's Code tab), when the turn in which Claude called `compact_now` ends. Its instructions: *"Keep what the next turn needs to continue: \<what Claude asked to keep\>. The full state is saved in \<handoff path\>; name that path in the summary."* Elsewhere it compacts directly with `$.session.compact`, with the same instructions.
 - **What it reads:**
   - the context percentage and token counts (`$.session.usage`), whether anything is drawn (`$.session.surfaces`), the session id, and its own state files
+  - the handoff file Claude names in `compact_now` (`$.fs.read`), to give its text back after the compaction
   - environment variables:
     - `CLAUDE_STATE_DIR`, `HOME` and `USERPROFILE`, to find the state folder
     - `CLAUDE_CODE_ENTRYPOINT`, `CLAUDECODE` and `CLAUDE_CODE_CHILD_SESSION`, to tell a desktop chat from a script run
     - `CATNAP_OFF`, and its old name `COMPACT_WHEN_READY_OFF`
     - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` and `CATNAP_AUTO_ORIG`, for the auto line
     - `CLAUDE_DELEGATE_LEG` and `CLAUDE_HARNESS_PROBE`, markers my own wrapper scripts set; elsewhere they do nothing
-  - It reads no keys, tokens or other credentials. The only conversation text its hooks read is the two fields Claude passes to `compact_now`.
+  - It reads no keys, tokens or other credentials. The only conversation text its hooks read is what Claude passes to `compact_now` and the handoff file it names there.
   - The `/check` command runs only when you type it. It asks Claude to run `bench/check.mjs`, which reads your local Claude Code transcript files and uses only numbers from them (token counts, timestamps, stop reasons, compaction markers), never message text. It prints a summary, writes nothing and sends nothing. Its `allowed-tools` line lets that one command (`node` on that one script) run without a permission prompt; it allows nothing else. `npx github:LippInc/catnap` runs the same script outside Claude Code: npm downloads it from this repository (`package.json` maps the command to `bench/check.mjs`, and the only code in the package is that script), and it does the same reading and nothing more.
 - **Other calls:** `$.clock.every` and `$.clock.now` run its timer. `$.ui.toast` shows a short notice when something fails, or when a compaction left the context near the lines.
 
 ## Tested
 
-- 66 automated tests (`claude plugin test .`), including the desktop app's refusal word for word. I broke twenty copies of the mod on purpose (three in 0.2; in 0.3, five for the auto line, seven for the drop fallback and five for desktop chats), and the tests fail on each one. Three more broken copies, for the rename: a tool name, a matcher or a manifest that disagrees with the others. Three of the tests exist to fail on those. Nine more broken copies in 0.3.5, for the floor guard (see [How it compacts](#how-it-compacts)): the tests fail on each one.
+- 73 automated tests (`claude plugin test .`), including the desktop app's refusal word for word. I broke twenty copies of the mod on purpose (three in 0.2; in 0.3, five for the auto line, seven for the drop fallback and five for desktop chats), and the tests fail on each one. Three more broken copies, for the rename: a tool name, a matcher or a manifest that disagrees with the others. Three of the tests exist to fail on those. Nine more broken copies in 0.3.5, for the floor guard (see [How it compacts](#how-it-compacts)): the tests fail on each one. Eight more in 0.3.6, for the handoff coming back in the continue message and the one-call nap; one of them is the whole of 0.3.5, which fails five of the new tests.
 - The live runs below were made before the rename, when the mod was called compact-when-ready.
 - Live on Windows 11, 2026-10-13:
   - **Desktop app Code tab (Claude Code 2.1.295):** `/compact` ran at 257K tokens and wrote a 29K-token summary. The continue message arrived and the work carried on.
@@ -174,6 +178,7 @@ catnap is a mod: code that runs with your permissions. These are the calls `clau
   - **Windows 11:** 2 of 2 runs did the whole loop at the 50% note. Claude finished the feature it was on, wrote its handoff, compacted (context about 106K to 50-51K tokens) and carried on to a green finish.
   - **Linux (Ubuntu on WSL):** with the strict line at 50%, the same loop ran and the task finished green. In an earlier run with the strict line at 54%, Claude ignored the 50% note and finished the whole task before reaching 54%, so it never compacted.
 - As catnap, interactive on Linux (Ubuntu on WSL, Claude Code 2.1.302, a terminal session, 200K window), 2026-10-18: 2 of 2 runs did the whole loop, with the mod compacting directly (no `/compact` fallback). In one, Claude had just finished the task when the note came, and after the compaction it said so. In the other it was mid-task and carried on to a green finish.
+- catnap 0.3.6, headless with a 200K window (Claude Code 2.1.302, Opus 5.5), 2026-10-18: 6 of 6 runs on two 40-ticket coding tasks, 12 naps. Every time, the continue message carried the handoff Claude had passed to `compact_now`, word for word; catnap answered the one request after the call, so the turn ended without another model call; and Claude's first step after the compaction was the next step its handoff named.
 - The auto line, live on Claude Code 2.1.296, 2026-10-17:
   - **Changing the variable at runtime moves auto-compact both ways.** A test mod lowered it from 70 to 7 at session start. Auto-compact then fired at the first check past the 7% line (about 69K): at 87K tokens, once a large file read had come in. In the control run it didn't fire up to 112K. Raised from 7 to 12, it didn't fire up to 111K either.
   - **In a terminal session, the mod set it:** no value at the start, the toast for a line below the strict one, and `7` set 1.5 seconds later, from `config.json`.

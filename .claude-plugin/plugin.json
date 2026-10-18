@@ -1,7 +1,7 @@
 {
   "name": "catnap",
   "displayName": "catnap",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Claude compacts its own conversation at a clean break, then carries on by itself. A gentle note at 50% context, a strict one at 60%, Claude Code's auto-compact at 70% as the backstop, and a compact_now tool. All three lines are settings.",
   "author": { "name": "Martin Lipp", "url": "https://github.com/LippInc" },
   "homepage": "https://github.com/LippInc/catnap",
@@ -40,7 +40,7 @@
     "save_step": {
       "type": "string",
       "title": "Save command (optional)",
-      "description": "A command Claude runs to save its work before compacting, such as /save-before-compact. Empty: Claude writes a handoff file itself.",
+      "description": "A command Claude runs to save its work before compacting, such as /save-before-compact. Empty: Claude passes its handoff to compact_now itself.",
       "default": ""
     }
   }

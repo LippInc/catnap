@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, existsSync, readdirSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, existsSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import plugin from "../index"
@@ -42,7 +42,7 @@ type Fake = {
   get?: (args: any) => any
 }
 
-const make = async (options: Record<string, unknown> = { window: WINDOW }, fake: Fake = {}) => {
+const make = async (options: Record<string, unknown> = { window: WINDOW }, fake: Fake = {}, directory?: string) => {
   const calls: Call[] = []
   const client: any = {
     config: {
@@ -72,7 +72,7 @@ const make = async (options: Record<string, unknown> = { window: WINDOW }, fake:
       },
     },
   }
-  const hooks: any = await plugin.server({ client } as any, options)
+  const hooks: any = await plugin.server({ client, ...(directory ? { directory } : {}) } as any, options)
   let created = 1000
   let n = 0
   return {
@@ -593,5 +593,97 @@ describe("floor guard", () => {
     await t.assistant(5100) // a session that starts at 51%
     expect(await t.toolCall()).toContain("comfortable moment")
     expect(floors()).toEqual([])
+  })
+})
+
+// the handoff's text rides in the continue message
+describe("the continue message carries the handoff", () => {
+  const OLD = (file: string) =>
+    `[compact-when-ready] The conversation was just compacted at your request (context had reached 61%). Your handoff: ${file}. Read it first, then carry on exactly where you left off, with the next step it names. If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work.`
+  const work: string[] = []
+  const scratch = () => {
+    const d = mkdtempSync(join(tmpdir(), "cwr-oc-handoff-"))
+    work.push(d)
+    return d
+  }
+  afterEach(() => {
+    for (const d of work.splice(0)) rmSync(d, { recursive: true, force: true })
+  })
+  // queue a compaction for `handoff` at 61%, run the idle step and return the continue message's text
+  const continueFor = async (handoff: string, directory?: string, fake: Fake = {}) => {
+    const t = await make({ window: WINDOW }, fake, directory)
+    await t.assistant(6100)
+    await t.compactNow({ handoff, keep: "the task" })
+    await t.idle()
+    const prompt = t.calls.find((c) => c.name === "promptAsync")!
+    return prompt.args.body.parts[0].text as string
+  }
+
+  test("a readable handoff file: its text is in the message, 'Read it first' is not", async () => {
+    const dir = scratch()
+    const file = join(dir, "handoff.md")
+    const text = "Task: port the parser.\nDone: lexer.\nNext: write the tests."
+    writeFileSync(file, `\n  ${text}\n\n`)
+    const msg = await continueFor(file)
+    expect(msg).toBe(
+      "[compact-when-ready] The conversation was just compacted at your request (context had reached 61%). " +
+        `Here is the handoff you wrote just before it (saved in ${file}):\n\n<handoff>\n${text}\n</handoff>\n\n` +
+        "Carry on exactly where you left off, with the next step it names. " +
+        "If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work.",
+    )
+    expect(msg).toContain(`<handoff>\n${text}\n</handoff>`)
+    expect(msg).not.toContain("Read it first")
+  })
+
+  test("a missing handoff file: the old message, unchanged", async () => {
+    const file = join(scratch(), "nope.md")
+    expect(await continueFor(file)).toBe(OLD(file))
+  })
+
+  test("an empty handoff file: the old message, unchanged", async () => {
+    const dir = scratch()
+    const file = join(dir, "blank.md")
+    writeFileSync(file, " \n\t\n")
+    expect(await continueFor(file)).toBe(OLD(file))
+  })
+
+  test("a handoff path that is a folder (unreadable): the old message, unchanged", async () => {
+    const dir = scratch()
+    expect(await continueFor(dir)).toBe(OLD(dir))
+  })
+
+  test("a handoff longer than 32,000 characters is cut there, with a line that names the file", async () => {
+    const dir = scratch()
+    const file = join(dir, "long.md")
+    writeFileSync(file, "a".repeat(32_000) + "ZZZ-AFTER-THE-CUT")
+    const msg = await continueFor(file)
+    expect(msg).toContain(
+      `<handoff>\n${"a".repeat(32_000)}\n[cut here at 32000 characters: read the rest in ${file} before you go on]\n</handoff>`,
+    )
+    expect(msg).not.toContain("ZZZ-AFTER-THE-CUT")
+    expect(msg).not.toContain("Read it first")
+  })
+
+  test("exactly 32,000 characters is not cut", async () => {
+    const dir = scratch()
+    const file = join(dir, "edge.md")
+    writeFileSync(file, "b".repeat(32_000))
+    const msg = await continueFor(file)
+    expect(msg).toContain(`<handoff>\n${"b".repeat(32_000)}\n</handoff>`)
+    expect(msg).not.toContain("[cut here")
+  })
+
+  test("a relative path resolves against the session directory (the plugin's, else the one session.get reports)", async () => {
+    const dir = scratch()
+    mkdirSync(join(dir, "notes"))
+    writeFileSync(join(dir, "notes", "h.md"), "Next: relative step.")
+    const msg = await continueFor("notes/h.md", dir)
+    expect(msg).toContain("<handoff>\nNext: relative step.\n</handoff>")
+    expect(msg).toContain("(saved in notes/h.md)")
+    // from another folder the same relative path finds nothing: the old message
+    expect(await continueFor("notes/h.md", scratch())).toBe(OLD("notes/h.md"))
+    // the session's own folder (session.get) wins over the plugin's
+    const viaSession = await continueFor("notes/h.md", scratch(), { get: () => ({ data: { id: SID, directory: dir } }) })
+    expect(viaSession).toContain("<handoff>\nNext: relative step.\n</handoff>")
   })
 })

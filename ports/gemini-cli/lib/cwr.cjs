@@ -234,8 +234,47 @@ const strictText = (p, strict) =>
 const QUEUED_NOTE =
   '[compact-when-ready] The reset is queued. End your reply now: no more tool calls and no more text. It runs as soon as the turn ends, and a message then tells you to continue.'
 
-const continueReason = handoff =>
-  `The conversation was just cleared at your request. Your handoff: ${handoff || '(no path was given; look for the handoff file you saved)'}. Read it first, then carry on exactly where you left off.`
+// The most of a handoff the continue message carries (about 8K tokens); a longer one is cut there, and the message says
+// where the rest is.
+const PASTE_MAX = 32_000
+
+const CARRY_ON =
+  'Carry on exactly where you left off, with the next step it names. ' +
+  'If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work.'
+
+// The handoff file's text for the continue message, trimmed and cut at PASTE_MAX: { text, cut }; null when there is no
+// path, or the file is missing, unreadable (a folder, no rights) or empty. A relative path is read from `cwd`, the
+// folder Gemini CLI reports for the session.
+const readHandoff = (handoff, cwd) => {
+  if (typeof handoff !== 'string' || handoff.trim() === '') return null
+  try {
+    const file = path.resolve(typeof cwd === 'string' && cwd ? cwd : process.cwd(), handoff.trim())
+    const text = fs.readFileSync(file, 'utf8').trim()
+    if (text === '') return null
+    return text.length <= PASTE_MAX ? { text, cut: false } : { text: text.slice(0, PASTE_MAX), cut: true }
+  } catch {
+    return null
+  }
+}
+
+// The message that sends the model back to work after the clear. With the handoff's text it carries the text itself
+// (a model can skip "read it first" and start from nothing); without it (no path, file missing or empty) it only
+// names the file, as before.
+const continueReason = (handoff, cwd) => {
+  const back = readHandoff(handoff, cwd)
+  if (!back) {
+    return `The conversation was just cleared at your request. Your handoff: ${handoff || '(no path was given; look for the handoff file you saved)'}. Read it first, then carry on exactly where you left off.`
+  }
+  const rest = back.cut ? `
+[cut here at ${PASTE_MAX} characters: read the rest in ${handoff} before you go on]` : ''
+  return `The conversation was just cleared at your request. Here is the handoff you wrote just before it (saved in ${handoff}):
+
+<handoff>
+${back.text}${rest}
+</handoff>
+
+${CARRY_ON}`
+}
 
 // ---------- the pieces the handlers share ----------
 
@@ -480,7 +519,7 @@ const handlers = {
     log(dir, sid, 'cleared', { handoff })
     return {
       decision: 'deny',
-      reason: continueReason(handoff),
+      reason: continueReason(handoff, input.cwd),
       hookSpecificOutput: { hookEventName: 'AfterAgent', clearContext: true },
     }
   },
