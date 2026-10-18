@@ -4,6 +4,8 @@
 
 **Claude naps at a clean break. Not mid-task.**
 
+https://github.com/user-attachments/assets/f8da42f1-4ef9-4471-8593-b682d969cbfe
+
 ```text
 finish the thought.
 leave a note.
