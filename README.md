@@ -1,4 +1,4 @@
-<img alt="catnap: a pixel cat asleep on its notes" src="launch/catnap.svg" width="340">
+<img alt="catnap: a pixel cat asleep on its notes" src="launch/catnap.svg" width="220">
 
 # catnap
 
