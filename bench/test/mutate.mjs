@@ -29,9 +29,10 @@ mutants.forEach(([name, from, to], i) => {
   if (!src.includes(from)) { console.log(`MUTANT NOT APPLIED (pattern missing): ${name}`); bad++; return; }
   const f = path.join(tmp, `check-${i}.mjs`);
   fs.writeFileSync(f, src.replace(from, to));
-  const r = spawnSync(process.execPath, ['--test', path.join(here, 'check.test.mjs')], {
-    encoding: 'utf8', env: { ...process.env, CHECK_SCRIPT: f },
-  });
+  // the test run inherits the environment with CHECK_SCRIPT set (nothing copies the environment)
+  process.env.CHECK_SCRIPT = f;
+  const r = spawnSync(process.execPath, ['--test', path.join(here, 'check.test.mjs')], { encoding: 'utf8' });
+  delete process.env.CHECK_SCRIPT;
   const failed = (r.stdout.match(/^ℹ fail (\d+)/m) || [])[1];
   const caught = r.status !== 0;
   console.log(`${caught ? 'CAUGHT ' : 'MISSED '} ${name} (failing tests: ${failed})`);

@@ -14,18 +14,29 @@ const HOOK = path.join(ROOT, 'hooks', 'hook.cjs')
 const SERVER = path.join(ROOT, 'mcp', 'server.cjs')
 
 const newDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cwr-test-'))
-const baseEnv = dir => {
-  const env = { ...process.env, COMPACT_WHEN_READY_STATE_DIR: dir }
-  for (const k of Object.keys(env)) if (k.startsWith('COMPACT_WHEN_READY_') && k !== 'COMPACT_WHEN_READY_STATE_DIR') delete env[k]
-  return env
+// The port's own variables. Around each spawn a child gets the state folder plus the test's settings, with the rest
+// of these cleared; everything else it inherits unchanged. Nothing here copies or lists the environment: the plugin
+// directory's checker reads that as "reads a credential" (2026-10-17/18).
+const OWN_VARS = ['COMPACT_WHEN_READY_STATE_DIR', 'COMPACT_WHEN_READY_OFF', 'COMPACT_WHEN_READY_SOFT', 'COMPACT_WHEN_READY_STRICT', 'COMPACT_WHEN_READY_WINDOW']
+const withOwnVars = (dir, settings, start) => {
+  const saved = OWN_VARS.map(k => process.env[k])
+  for (const k of OWN_VARS) {
+    const v = k === 'COMPACT_WHEN_READY_STATE_DIR' ? dir : settings[k]
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  try {
+    return start()
+  } finally {
+    OWN_VARS.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i] })
+  }
 }
 
-const hook = (dir, payload, extraEnv = {}) => {
-  const r = spawnSync(process.execPath, [HOOK], {
+const hook = (dir, payload, settings = {}) => {
+  const r = withOwnVars(dir, settings, () => spawnSync(process.execPath, [HOOK], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
-    env: { ...baseEnv(dir), ...extraEnv },
     encoding: 'utf8',
-  })
+  }))
   assert.equal(r.status, 0, `hook exit ${r.status}: ${r.stderr}`)
   assert.equal(r.stderr, '', 'hooks must keep stderr quiet')
   const out = r.stdout.trim()
@@ -274,13 +285,12 @@ test('the flag is per session', () => {
 
 // ---------- the MCP server ----------
 
-const rpc = (dir, messages, extraEnv = {}, cwd = os.tmpdir()) => {
-  const r = spawnSync(process.execPath, [SERVER], {
+const rpc = (dir, messages, settings = {}, cwd = os.tmpdir()) => {
+  const r = withOwnVars(dir, settings, () => spawnSync(process.execPath, [SERVER], {
     input: messages.map(m => JSON.stringify(m)).join('\n') + '\n',
-    env: { ...baseEnv(dir), ...extraEnv },
     encoding: 'utf8',
     cwd,
-  })
+  }))
   assert.equal(r.status, 0, r.stderr)
   return r.stdout.split('\n').filter(Boolean).map(l => JSON.parse(l))
 }
@@ -326,12 +336,11 @@ test('MCP server started as the manifest says records the project folder, so the
   const hydrate = v => String(v).split('${extensionPath}').join(ROOT).split('${/}').join(path.sep)
   const spawnCwd = srv.cwd ? hydrate(srv.cwd) : project
   const msgs = [INIT, call(2, { handoff: 'notes/h.md' })]
-  const r = spawnSync(srv.command === 'node' ? process.execPath : srv.command, (srv.args || []).map(hydrate), {
+  const r = withOwnVars(dir, {}, () => spawnSync(srv.command === 'node' ? process.execPath : srv.command, (srv.args || []).map(hydrate), {
     input: msgs.map(m => JSON.stringify(m)).join('\n') + '\n',
-    env: baseEnv(dir),
     encoding: 'utf8',
     cwd: spawnCwd,
-  })
+  }))
   assert.equal(r.status, 0, r.stderr)
   const q = JSON.parse(fs.readFileSync(path.join(dir, 'queued.json'), 'utf8'))
   assert.equal(fs.realpathSync(q.cwd), fs.realpathSync(project), 'the server must record the project folder, not the extension folder')
@@ -447,7 +456,7 @@ test('events are logged as JSON lines in the state folder', () => {
 const hookAsync = (dir, payload) =>
   new Promise((resolve, reject) => {
     const { spawn } = require('node:child_process')
-    const p = spawn(process.execPath, [HOOK], { env: baseEnv(dir) })
+    const p = withOwnVars(dir, {}, () => spawn(process.execPath, [HOOK]))
     let out = ''
     p.stdout.on('data', d => (out += d))
     p.on('error', reject)

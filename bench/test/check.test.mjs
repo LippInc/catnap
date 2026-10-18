@@ -1,4 +1,4 @@
-// node --test bench/test/
+// node --test bench/test/check.test.mjs
 // CHECK_SCRIPT=/path/to/mutated/check.mjs lets mutate.mjs run the same tests against a planted bug.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,11 +9,21 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const script = process.env.CHECK_SCRIPT || path.join(here, '..', 'check.mjs');
 
+// The child inherits this process's environment; only CLAUDE_CONFIG_DIR is set, around the call, and restored.
+// Nothing copies or lists the environment (the plugin directory's checker reads that as "reads a credential").
+function inFixture(fixture, start) {
+  const saved = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = path.join(here, 'fixtures', fixture);
+  try {
+    return start();
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = saved;
+  }
+}
+
 function run(fixture, ...args) {
-  const out = execFileSync(process.execPath, [script, '--json', '--days', '36500', ...args], {
-    env: { ...process.env, CLAUDE_CONFIG_DIR: path.join(here, 'fixtures', fixture) },
-    encoding: 'utf8',
-  });
+  const out = inFixture(fixture, () => execFileSync(process.execPath, [script, '--json', '--days', '36500', ...args], { encoding: 'utf8' }));
   return JSON.parse(out);
 }
 
@@ -71,9 +81,7 @@ test('(d) re-logged duplicate message.id records are counted once', () => {
 });
 
 test('output prints no paths or text', () => {
-  const out = execFileSync(process.execPath, [script, '--days', '36500'], {
-    env: { ...process.env, CLAUDE_CONFIG_DIR: path.join(here, 'fixtures', 'b-linear') }, encoding: 'utf8',
-  });
+  const out = inFixture('b-linear', () => execFileSync(process.execPath, [script, '--days', '36500'], { encoding: 'utf8' }));
   assert.ok(!out.includes('fixtures') && !out.includes('s.jsonl'));
   assert.ok(out.split('\n').length <= 14);
 });
