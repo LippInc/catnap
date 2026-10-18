@@ -2,6 +2,8 @@
 // CHECK_SCRIPT=/path/to/mutated/check.mjs lets mutate.mjs run the same tests against a planted bug.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -95,4 +97,28 @@ test('the card: measured count on line 1, the estimate labelled on line 2, the l
   const none = text('a-short');
   assert.match(none[0], /No auto-compactions in the last 36500 days\.$/);
   assert.match(none[1], /would not have re-read less here\.$/);
+});
+
+// npx starts the script through a symlink in node_modules/.bin on Linux and macOS. Windows without
+// developer mode refuses file symlinks, so there a directory junction gives the same linked path.
+test('started through a symlink, as npx does, it still prints the card', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'catnap-bin-'));
+  let link = path.join(dir, 'catnap');
+  let junction = null;
+  try {
+    fs.symlinkSync(path.resolve(script), link);
+  } catch {
+    junction = path.join(dir, 'pkg');
+    fs.symlinkSync(path.dirname(path.resolve(script)), junction, 'junction');
+    link = path.join(junction, path.basename(script));
+  }
+  try {
+    const out = inFixture('c1-mid-task', () => execFileSync(process.execPath, [link, '--days', '36500'], { encoding: 'utf8' }));
+    assert.match(out.split('\n')[0], /1 of 1 auto-compaction cut Claude off mid-task\.$/);
+  } finally {
+    // Remove the link itself first (rmdir on a junction never touches its target), then the empty temp folder.
+    if (junction) fs.rmdirSync(junction);
+    else fs.unlinkSync(link);
+    fs.rmdirSync(dir);
+  }
 });

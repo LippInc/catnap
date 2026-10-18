@@ -28,7 +28,7 @@ You need Claude Code v2.1.287 or later, or v2.1.286 in the desktop app. Inside a
 
 **After that it runs on its own.** You see nothing until the context reaches 50%: about 100K tokens on a 200K window, about 500K on a 1M window, which can take hours. Then Claude finishes its piece, writes a handoff and compacts, and a message starting with `[catnap]` tells it to carry on. You don't type anything.
 
-**Your own numbers:** `/catnap:check` reads your local Claude Code logs (numbers only; nothing leaves your machine) and starts with a card like this one, from the author's last 30 days:
+**Your own numbers:** `/catnap:check` reads your local Claude Code logs (numbers only; nothing leaves your machine) and starts with a card like this one, from the author's last 30 days. To see yours before installing anything, run `npx github:LippInc/catnap` in any terminal (Node 18 or later):
 
 ```text
  /\_/\  zZ   78 of 82 auto-compactions cut Claude off mid-task.
@@ -101,7 +101,7 @@ A port needs four things from the agent's hooks: read the context percentage, ad
 
 **No compaction mid-task with catnap:** in the author's real work over 5 days with it, all 13 compactions came at a moment Claude picked, and each one carried on by itself.
 
-**Check your own history in seconds:** `/catnap:check` inside Claude Code (or `node bench/check.mjs` from a clone) reads your local Claude Code logs and prints numbers only (nothing leaves your machine) and tells you how often auto-compact cut in mid-task and what a clean-break compaction would have saved. Your number will differ: it covers all your sessions, short ones included, so it is usually lower than the long-session replay above (17.5% on the author's last 30 days). The author's last 30 days: 78 of 82 auto-compactions landed while Claude was in the middle of a tool loop. That is not bad luck: on the author's machine about 92% of Claude's calls end in a tool call, and auto-compact doesn't wait for a clean break.
+**Check your own history in seconds:** `/catnap:check` inside Claude Code (or `npx github:LippInc/catnap` with nothing installed, or `node bench/check.mjs` from a clone) reads your local Claude Code logs and prints numbers only (nothing leaves your machine) and tells you how often auto-compact cut in mid-task and what a clean-break compaction would have saved. Your number will differ: it covers all your sessions, short ones included, so it is usually lower than the long-session replay above (17.5% on the author's last 30 days). The author's last 30 days: 78 of 82 auto-compactions landed while Claude was in the middle of a tool loop. That is not bad luck: on the author's machine about 92% of Claude's calls end in a tool call, and auto-compact doesn't wait for a clean break.
 
 ## FAQ
 
@@ -160,7 +160,7 @@ catnap is a mod: code that runs with your permissions. These are the calls `clau
     - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` and `CATNAP_AUTO_ORIG`, for the auto line
     - `CLAUDE_DELEGATE_LEG` and `CLAUDE_HARNESS_PROBE`, markers my own wrapper scripts set; elsewhere they do nothing
   - It reads no keys, tokens or other credentials. The only conversation text its hooks read is the two fields Claude passes to `compact_now`.
-  - The `/check` command runs only when you type it. It asks Claude to run `bench/check.mjs`, which reads your local Claude Code transcript files and uses only numbers from them (token counts, timestamps, stop reasons, compaction markers), never message text. It prints a summary, writes nothing and sends nothing. Its `allowed-tools` line lets that one command (`node` on that one script) run without a permission prompt; it allows nothing else.
+  - The `/check` command runs only when you type it. It asks Claude to run `bench/check.mjs`, which reads your local Claude Code transcript files and uses only numbers from them (token counts, timestamps, stop reasons, compaction markers), never message text. It prints a summary, writes nothing and sends nothing. Its `allowed-tools` line lets that one command (`node` on that one script) run without a permission prompt; it allows nothing else. `npx github:LippInc/catnap` runs the same script outside Claude Code: npm downloads it from this repository (`package.json` maps the command to `bench/check.mjs`, and the only code in the package is that script), and it does the same reading and nothing more.
 - **Other calls:** `$.clock.every` and `$.clock.now` run its timer. `$.ui.toast` shows a short notice when something fails, or when a compaction left the context near the lines.
 
 ## Tested
@@ -203,7 +203,7 @@ catnap is a mod: code that runs with your permissions. These are the calls `clau
 
 ## Privacy
 
-catnap collects nothing and sends nothing anywhere. It makes no network requests, no model calls of its own and starts no processes, and it has no account, telemetry or analytics. What it keeps stays on your machine, in its own state folder (see [Files it writes](#files-it-writes)). The two prompts it submits go into your own session and hold only the text listed under [What it can reach](#what-it-can-reach). The `/check` command reads your local Claude Code transcripts on your machine for numbers only, and sends nothing.
+catnap collects nothing and sends nothing anywhere. It makes no network requests, no model calls of its own and starts no processes, and it has no account, telemetry or analytics. What it keeps stays on your machine, in its own state folder (see [Files it writes](#files-it-writes)). The two prompts it submits go into your own session and hold only the text listed under [What it can reach](#what-it-can-reach). The `/check` command (and `npx github:LippInc/catnap`, the same script) reads your local Claude Code transcripts on your machine for numbers only, and sends nothing.
 
 ## License
 

@@ -1,0 +1,19 @@
+{
+  "name": "@lippinc/catnap",
+  "version": "0.3.5",
+  "private": true,
+  "description": "catnap's history check without installing anything: how often Claude Code's auto-compact cut in mid-task, from your local logs. Run: npx github:LippInc/catnap",
+  "license": "MIT",
+  "homepage": "https://github.com/LippInc/catnap",
+  "repository": "github:LippInc/catnap",
+  "bin": {
+    "catnap": "bench/check.mjs"
+  },
+  "files": [
+    "bench/check.mjs",
+    "bench/METHOD.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

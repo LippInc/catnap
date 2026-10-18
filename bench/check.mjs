@@ -3,6 +3,7 @@
 // Read-only, zero dependencies, no network. Prints numbers only, never transcript text.
 //
 //   node bench/check.mjs [--days 30] [--json] [--soft 50] [--auto 70] [--replace-manual]
+//   npx github:LippInc/catnap [same options]   (no install; package.json maps the bin here)
 //
 // Method: see bench/METHOD.md.
 
@@ -10,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const FALLBACK_RESET = 100_000;
 
@@ -295,6 +296,21 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+// Run main only when started as a program, not when imported by the tests. npx starts it through a
+// symlink in node_modules/.bin on Linux and macOS, so compare real paths, not the paths as given.
+export function isMain(argv1, selfUrl) {
+  if (!argv1) return false;
+  try {
+    const norm = (p) => {
+      const r = fs.realpathSync(p);
+      return process.platform === 'win32' ? r.toLowerCase() : r;
+    };
+    return norm(path.resolve(argv1)) === norm(fileURLToPath(selfUrl));
+  } catch {
+    return false;
+  }
+}
+
+if (isMain(process.argv[1], import.meta.url)) {
   main();
 }
