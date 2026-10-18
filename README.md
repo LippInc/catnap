@@ -145,6 +145,7 @@ These are the calls `claude plugin validate .` lists, and what each one is for. 
 - As catnap, headless with a 200K window (Claude Code 2.1.302), 2026-10-17 and 10-18:
   - **Windows 11:** 2 of 2 runs did the whole loop at the 50% note. Claude finished the feature it was on, wrote its handoff, compacted (context about 106K to 50-51K tokens) and carried on to a green finish.
   - **Linux (Ubuntu on WSL):** with the strict line at 50%, the same loop ran and the task finished green. In an earlier run with the strict line at 54%, Claude ignored the 50% note and finished the whole task before reaching 54%, so it never compacted.
+- As catnap, interactive on Linux (Ubuntu on WSL, Claude Code 2.1.302, a terminal session, 200K window), 2026-10-18: 2 of 2 runs did the whole loop, with the mod compacting directly (no `/compact` fallback). In one, Claude had just finished the task when the note came, and after the compaction it said so. In the other it was mid-task and carried on to a green finish.
 - The auto line, live on Claude Code 2.1.296, 2026-10-17:
   - **Changing the variable at runtime moves auto-compact both ways.** A test mod lowered it from 70 to 7 at session start. Auto-compact then fired at the first check past the 7% line (about 69K): at 87K tokens, once a large file read had come in. In the control run it didn't fire up to 112K. Raised from 7 to 12, it didn't fire up to 111K either.
   - **In a terminal session, the mod set it:** no value at the start, the toast for a line below the strict one, and `7` set 1.5 seconds later, from `config.json`.
@@ -154,7 +155,7 @@ These are the calls `claude plugin validate .` lists, and what each one is for. 
 - Desktop chats with no window attached, on Claude Code 2.1.299, 2026-10-17:
   - **The bug:** in a real chat, one long turn crossed 50% and then 60% with no note. The app had no window attached to the chat, and 0.2 only acted while one was. The first note came at 63%, right after a new prompt was typed in that chat.
   - **The fix, on the same engine with nothing attached** (test lines at 1% and 2%): 0.3 knew it was a desktop chat, gave the note at 5% and asked at the turn end. A `claude -p` started from inside a chat stayed silent. With the fix taken out, the first run was silent too, as the real chat had been.
-- **Not tested:** macOS, Linux outside headless runs, the VS Code extension, long real sessions in a terminal, the auto line in the desktop app's Code tab, and a session with `sec-default` really seated (that needs an organization's managed settings).
+- **Not tested:** macOS, the VS Code extension, long real sessions in a terminal, the auto line in the desktop app's Code tab, and a session with `sec-default` really seated (that needs an organization's managed settings).
 
 ## Limits
 
