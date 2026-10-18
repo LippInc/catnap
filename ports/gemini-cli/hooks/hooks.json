@@ -1,0 +1,69 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "name": "cwr-session-start",
+            "type": "command",
+            "command": "node \"${extensionPath}${/}hooks${/}hook.cjs\"",
+            "timeout": 10000,
+            "description": "compact-when-ready: start the note cycle over for this session"
+          }
+        ]
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "name": "cwr-before-agent",
+            "type": "command",
+            "command": "node \"${extensionPath}${/}hooks${/}hook.cjs\"",
+            "timeout": 10000,
+            "description": "compact-when-ready: add the soft or strict note when a turn starts past a line"
+          }
+        ]
+      }
+    ],
+    "AfterModel": [
+      {
+        "hooks": [
+          {
+            "name": "cwr-after-model",
+            "type": "command",
+            "command": "node \"${extensionPath}${/}hooks${/}hook.cjs\"",
+            "timeout": 5000,
+            "description": "compact-when-ready: record the token count of each model response"
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "hooks": [
+          {
+            "name": "cwr-after-tool",
+            "type": "command",
+            "command": "node \"${extensionPath}${/}hooks${/}hook.cjs\"",
+            "timeout": 10000,
+            "description": "compact-when-ready: add the soft or strict note to a tool result; notice compact_now"
+          }
+        ]
+      }
+    ],
+    "AfterAgent": [
+      {
+        "hooks": [
+          {
+            "name": "cwr-after-agent",
+            "type": "command",
+            "command": "node \"${extensionPath}${/}hooks${/}hook.cjs\"",
+            "timeout": 10000,
+            "description": "compact-when-ready: after compact_now, clear the conversation and send the model to its handoff"
+          }
+        ]
+      }
+    ]
+  }
+}

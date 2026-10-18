@@ -1,0 +1,13 @@
+{
+  "name": "compact-when-ready",
+  "version": "0.1.0",
+  "description": "The model resets its own context at a clean break: it saves a handoff file, calls compact_now, and Gemini CLI clears the conversation and sends it back to the handoff. Port of the Claude Code mod compact-when-ready.",
+  "mcpServers": {
+    "compact-when-ready": {
+      "command": "node",
+      "args": [
+        "${extensionPath}${/}mcp${/}server.cjs"
+      ]
+    }
+  }
+}
