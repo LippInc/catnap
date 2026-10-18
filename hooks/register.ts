@@ -27,6 +27,9 @@ import type { PluginOptions, Register, Timer } from 'claude-code'
 //   Enterprise organization), which holds that hook back from a person's mods since 2.1.299
 //   (anthropics/claude-code#102134). The fallback: context that falls DROP_POINTS or more between two checks, with no
 //   compaction of the mod's own queued or running, was compacted some other way.
+// After any compaction the first percent seen is the floor: for that cycle both lines sit at least FLOOR_GAIN points
+//   above it (logged once a cycle, one toast a session when that moves a line), so a session whose fixed part is near
+//   the lines is not asked to compact again and again. The auto line stays as set.
 //
 // State folder = <state>/catnap (NAME), <state> = CLAUDE_STATE_DIR, else ~/.claude/state.
 // Config: the userConfig options (soft_percent, strict_percent, auto_percent, save_step), then config.json in the state
@@ -68,6 +71,11 @@ const SLASH_TIMEOUT_MS = 10 * 60_000 // a /compact run that has not landed by th
 // compaction leaves a few percent (live: 257K->29K, 531K->28K, 66K->7K tokens; on 2.1.302 an auto-compact went from
 // 38% to 8% at the next check, the messages it keeps included), while plain work only adds context
 const DROP_POINTS = 20
+// how far above the floor the lines sit at least: a compaction normally leaves a few percent, so the lines stand as
+// set; where the session's fixed part (system prompt, tools, CLAUDE.md) is itself near the lines, a compaction frees
+// almost nothing and each note would ask for another one (live 2026-10-18: a 90K-token CLAUDE.md on a 200K window left
+// 50-51% after each compaction, and Claude compacted three times in two minutes)
+const FLOOR_GAIN = 10
 // $.session.compact's refusal where only a /compact run can compact (the desktop app, live 2026-10-13)
 export const isHeadlessRefusal = (err: unknown) => /not available in a headless/i.test(String(err))
 
@@ -172,6 +180,10 @@ export const register: Register = (on, options) => {
   let lastNote = -1 // percent at the last mid-turn note
   let lastAsk = -1 // percent at the last turn-end ask
   let lastPct = -1 // percent at the last check, for the drop fallback (-1: none since the cycle started)
+  let floor = -1 // percent at the first check after the last compaction (-1: none seen yet)
+  let floorNext = false // a compaction landed: the next check with a number sets the floor
+  let floorNoted = false // this floor's line move is logged
+  let floorWarned = false // the toast about a floor near the lines went out (once a session)
   let busy = false
   let retries = 0
   let flagDirty = false // the pending flag file needs rewriting
@@ -232,12 +244,32 @@ export const register: Register = (on, options) => {
   // mod's own queued or running, was a compaction the hook did not report. Logged once: the next check compares anew.
   const sawPercent = (pct: number | undefined) => {
     if (pct === undefined) return // none until the first response after a compaction: the next check compares
+    if (floorNext) setFloor(pct)
     const before = lastPct
     lastPct = pct
     if (pending || slashJob || before < 0 || pct > before - DROP_POINTS) return
     reset()
     lastPct = pct
+    setFloor(pct)
     log('compacted-elsewhere', { via: 'drop', from: before, to: pct })
+  }
+  const setFloor = (pct: number) => {
+    floor = pct
+    floorNext = false
+    floorNoted = false
+  }
+  // The lines this cycle: as set, but at least FLOOR_GAIN points above the floor (a soft line lifted to the strict
+  // one is off, as when set that way).
+  const lifted = (c: Config): Config =>
+    floor < 0 ? c : { ...c, soft: Math.max(c.soft, floor + FLOOR_GAIN), threshold: Math.max(c.threshold, floor + FLOOR_GAIN) }
+  const noteFloor = (c: Config, l: Config) => {
+    if (floorNoted || (l.soft === c.soft && l.threshold === c.threshold)) return
+    floorNoted = true
+    const next = l.soft < l.threshold ? l.soft : l.threshold
+    log('high-floor', { floor, soft: l.soft, threshold: l.threshold })
+    if (floorWarned) return
+    floorWarned = true
+    toast = `context was still at ${floor}% right after compacting (this session's fixed part, such as the system prompt, tools and CLAUDE.md, takes that much), so the next note waits for ${next}%`
   }
 
   on('session.start', async ($, e, next) => {
@@ -349,6 +381,7 @@ export const register: Register = (on, options) => {
               } else {
                 log('compacted', { tokensBefore: res.tokensBefore, tokensAfter: res.tokensAfter })
                 landedJob = job
+                floorNext = true
               }
             } catch (err) {
               // refused: this host never compacts directly (learned for the session), or a turn runs; a /compact
@@ -376,6 +409,7 @@ export const register: Register = (on, options) => {
                 if (slashJob !== job) return
                 reset()
                 landedJob = job
+                floorNext = true
                 log('compacted', { via: 'command-result', text: String(res.text ?? '').slice(0, 200) })
               },
               err => {
@@ -449,18 +483,20 @@ export const register: Register = (on, options) => {
     wantAuto(c)
     if (c.off) return r
     if (pct === undefined) return r
-    if (pct < c.threshold) {
+    const l = lifted(c)
+    noteFloor(c, l)
+    if (pct < l.threshold) {
       // the soft line: one note per cycle, then quiet until the strict line
-      if (softNoted || c.soft >= c.threshold || pct < c.soft) return r
+      if (softNoted || l.soft >= l.threshold || pct < l.soft) return r
       softNoted = true
-      log('soft-note', { percent: pct, soft: c.soft, threshold: c.threshold })
-      return { ...r, context: [...(r.context ?? []), softText(pct, c.threshold, toolName, save)] }
+      log('soft-note', { percent: pct, soft: l.soft, threshold: l.threshold })
+      return { ...r, context: [...(r.context ?? []), softText(pct, l.threshold, toolName, save)] }
     }
     if (lastNote >= 0 && pct < lastNote + REMIND_STEP) return r
     softNoted = true // past the strict line the soft note is moot
     lastNote = pct
-    log('note', { percent: pct, threshold: c.threshold })
-    return { ...r, context: [...(r.context ?? []), noteText(pct, c.threshold, toolName, save)] }
+    log('note', { percent: pct, threshold: l.threshold })
+    return { ...r, context: [...(r.context ?? []), noteText(pct, l.threshold, toolName, save)] }
   }).catch(($, e, next) => next(e)) // fail open: a broken note never blocks a tool
 
   on('turn.complete', async ($, e, next) => {
@@ -482,12 +518,14 @@ export const register: Register = (on, options) => {
     if (gaveUp || e.reason !== 'answer') return r
     const c = parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base)
     wantAuto(c)
-    if (c.off) return r
-    if (pct === undefined || pct < c.threshold) return r
+    if (c.off || pct === undefined) return r
+    const l = lifted(c)
+    noteFloor(c, l)
+    if (pct < l.threshold) return r
     if (lastAsk >= 0 && pct < lastAsk + ASK_STEP) return r
     lastAsk = pct
-    ask = askText(pct, c.threshold, toolName, save)
-    log('ask', { percent: pct, threshold: c.threshold })
+    ask = askText(pct, l.threshold, toolName, save)
+    log('ask', { percent: pct, threshold: l.threshold })
     return r
   })
 
@@ -500,6 +538,7 @@ export const register: Register = (on, options) => {
       if (landed) {
         reset()
         landedJob = job
+        floorNext = true
         log('compacted', { via: 'prompt', trigger: e.trigger, tokensBefore: r.tokensBefore, tokensAfter: r.tokensAfter })
       } else {
         const reason = 'skip' in r && r.skip !== undefined ? String(r.skip) : 'skipped'
@@ -512,6 +551,7 @@ export const register: Register = (on, options) => {
     if (!e.agentId && landed && (e.trigger === 'auto' || e.trigger === 'manual')) {
       // the backstop or the user compacted: whatever was queued is done, start the note cycle over
       reset()
+      floorNext = true
       log('compacted-elsewhere', { trigger: e.trigger })
     }
     return r

@@ -467,6 +467,8 @@ test('a compaction landing some other way ends the give-up', async ($, on) => {
   await clock.advance(11 * 60_000)
   expect(w.toasts.length).toBe(1)
   await $.session.compact({ trigger: 'auto', messages: MSGS, instructions: undefined } as never)
+  w.pct = 5 // the first check after it: the floor
+  await $.tool.call(read)
   w.pct = 61
   expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Save and compact now/)
 })
@@ -676,7 +678,7 @@ test('the auto line in the config parser and the target', () => {
 
 // The fallback for a compaction the session.compact hook does not report (a seated sec-default holds that hook back:
 // anthropics/claude-code#102134). Here the hook is simply never raised, as there.
-type LogEvent = { kind: string; via?: string; from?: number; to?: number; trigger?: string }
+type LogEvent = { kind: string; via?: string; from?: number; to?: number; trigger?: string; floor?: number; soft?: number; threshold?: number }
 const logOf = (w: World): LogEvent[] =>
   JSON.parse([...w.files].find(([p]) => /sess-1\.log\.json$/.test(slash(p)))?.[1] ?? '[]') as LogEvent[]
 const elsewhere = (w: World) => logOf(w).filter(e => e.kind === 'compacted-elsewhere')
@@ -846,4 +848,113 @@ test('the matcher answers the full tool name and nothing else', async ($, on) =>
     const r = await $.tool.call({ tool: other, handoff: 'h.md', keep: 'k' } as never)
     expect(JSON.stringify(r)).not.toMatch(/Compaction queued/)
   }
+})
+
+// A session whose fixed part (system prompt, tools, CLAUDE.md) sits near the lines: a compaction frees almost nothing,
+// so for that cycle the lines sit ten points above where it left the context (live 2026-10-18: three compactions in
+// two minutes without this).
+const floorMoves = (w: World) => logOf(w).filter(e => e.kind === 'high-floor')
+
+test('a compaction that leaves the context near the lines lifts them ten points for that cycle, with one toast', async ($, on) => {
+  const { w, clock } = world(on, { pct: 52 })
+  await start($)
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/comfortable moment/)
+  await queueAndEnd($)
+  await clock.advance(1600)
+  expect(w.compacts.length).toBe(1)
+  expect(w.prompts.length).toBe(1) // the continue
+  w.pct = 51 // the compaction freed almost nothing
+  expect((await $.tool.call(read)).context ?? []).toEqual([]) // no soft note at 51
+  await clock.advance(1600)
+  expect(w.toasts.length).toBe(1)
+  expect(w.toasts[0] ?? '').toMatch(/still at 51% right after compacting.*the next note waits for 61%/)
+  w.pct = 60
+  expect((await $.tool.call(read)).context ?? []).toEqual([]) // no strict note at 60 either
+  await turnEnd($, 't2')
+  await clock.advance(1600)
+  expect(w.prompts.length).toBe(1) // and no ask at 60
+  w.pct = 61
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 61% of the window \(the line is 61%\)\. Save and compact now/)
+  expect(floorMoves(w).map(e => [e.floor, e.soft, e.threshold])).toEqual([[51, 61, 61]])
+})
+
+test('a compaction that leaves 40% or less keeps the lines as set, with no toast', async ($, on) => {
+  const { w, clock } = world(on, { pct: 61 })
+  await start($)
+  await $.tool.call(read)
+  await queueAndEnd($)
+  await clock.advance(1600)
+  w.pct = 40 // 40 + 10 is the soft line itself
+  expect((await $.tool.call(read)).context ?? []).toEqual([])
+  w.pct = 50
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 50% of the window\. Compact at a comfortable moment before 60%/)
+  await clock.advance(1600)
+  expect(w.toasts).toEqual([])
+  expect(floorMoves(w)).toEqual([])
+})
+
+test('an auto-compaction or an unreported drop sets the floor too; the next compaction sets a new one', async ($, on) => {
+  const { w, clock } = world(on, { pct: 75 })
+  await start($)
+  await $.tool.call(read)
+  await $.session.compact({ trigger: 'auto', messages: MSGS, instructions: undefined } as never)
+  w.pct = 55
+  expect((await $.tool.call(read)).context ?? []).toEqual([]) // both lines at 65: the soft one is off
+  w.pct = 64
+  expect((await $.tool.call(read)).context ?? []).toEqual([])
+  w.pct = 65
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 65% of the window \(the line is 65%\)/)
+  w.pct = 30 // compacted some other way, unreported: a 35-point fall
+  expect((await $.tool.call(read)).context ?? []).toEqual([])
+  w.pct = 50
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 50% of the window\. Compact at a comfortable moment before 60%/)
+  await clock.advance(1600)
+  expect(w.toasts.length).toBe(1) // once a session
+  expect(floorMoves(w).map(e => e.floor)).toEqual([55])
+})
+
+test('a second cycle near the lines lifts them again, logged again, with no second toast', async ($, on) => {
+  const { w, clock } = world(on, { pct: 52 })
+  await start($)
+  await queueAndEnd($)
+  await clock.advance(1600)
+  w.pct = 51
+  await $.tool.call(read)
+  w.pct = 61
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/the line is 61%/)
+  await $.tool.call({ tool: TOOL, handoff: 'h.md', keep: 'k' } as never)
+  await turnEnd($, 't2')
+  await clock.advance(1600)
+  expect(w.compacts.length).toBe(2)
+  w.pct = 52
+  expect((await $.tool.call(read)).context ?? []).toEqual([])
+  await clock.advance(1600)
+  expect(w.toasts.length).toBe(1)
+  expect(floorMoves(w).map(e => [e.floor, e.threshold])).toEqual([[51, 61], [52, 62]])
+})
+
+test("the floor after the mod's /compact (the desktop app's way) counts too, by hook or by the command's end", async ($, on) => {
+  const { w, clock, release } = world(on, { pct: 52, headless: true, commandMode: 'hold' })
+  await start($)
+  await queueAndEnd($)
+  await clock.advance(1500 * 3 + 100)
+  expect(w.commands.length).toBe(1)
+  await $.session.compact({ trigger: 'manual', messages: MSGS, instructions: 'x' } as never) // landed, by the hook
+  await clock.advance(1600)
+  release()
+  w.pct = 51
+  expect((await $.tool.call(read)).context ?? []).toEqual([])
+  w.pct = 61
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/the line is 61%/)
+  // the next one lands only by the command's end
+  w.commandMode = 'done'
+  await $.tool.call({ tool: TOOL, handoff: 'h.md', keep: 'k' } as never)
+  await turnEnd($, 't2')
+  await clock.advance(1500 * 3 + 100) // three refusals again, then /compact
+  expect(w.commands.length).toBe(2)
+  await clock.advance(1600)
+  w.pct = 53
+  expect((await $.tool.call(read)).context ?? []).toEqual([])
+  await clock.advance(1600) // the log goes to disk on the timer
+  expect(floorMoves(w).map(e => [e.floor, e.threshold])).toEqual([[51, 61], [53, 63]])
 })
