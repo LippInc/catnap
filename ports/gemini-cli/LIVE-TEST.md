@@ -172,3 +172,23 @@ Result: **item 2 PASS on a real model, once.** The soft note was not acted on; t
 ## Second real-model run, 2026-10-18 00:13 UTC, neutral prompt (added by the coordinating session)
 
 Same setup as `liveD-g3` (project `live-e`, fresh), but the prompt without the sentence that says notes come from installed tooling (`prompt-neutral.txt`). Label `liveE-neutral`, 88 s. Event log: `soft-note` 29% -> `strict-note` 42% -> `strict-note` 55% -> `mcp-queued` -> `queued` -> `cleared`. The model wrote `handoff.md`, and after the clear wrote `summary.md` with all four CODE lines correct. The CLI then exited 1: its final reply hit the free daily quota for `gemini-3-flash` (limit 20 a day, retry in 23h45m). So the loop and the task completed; only the closing "DONE" reply was lost to the quota. No real-model control was possible after that (the scripted run covers it).
+
+## The floor guard (2026-10-18, 01:40 UTC, added by the coordinating session)
+
+After a clear, or a compression the extension sees as a 20-point fall, the first main-chat reading is the floor; for that cycle both lines sit at least 10 points above it (`high-floor` in the log). Unit tests: 58 (5 new); six planted breaks of the guard each fail at least one (one first try was an equivalent change, since a clear already resets the flag through `freshState()`; it was replaced by a break in the compression path, with a test for it). `node test/validate.cjs` still valid.
+
+Scripted-API run `mock-floor2` (real CLI 0.64.0, real extension through the link, the same `mock-gemini.cjs` stand-in, fake key, no quota; window 40000, soft 20, strict 35; the project's `.gemini/settings.json` needs `security.auth.selectedType: gemini-api-key`, without it the first try `mock-floor1` stopped at "Invalid auth method selected"):
+
+```
+session-start
+soft-note    25 (soft 20, strict 35)
+strict-note  38
+strict-note  44
+mcp-queued   handoff.md
+queued       handoff.md
+cleared      handoff.md
+high-floor   floor 26 -> lines 36/36 (the soft one is off)
+strict-note  38 (the line is 36)
+```
+
+`summary.md` holds all four codes and the CLI answered `DONE`. Compared with `mock2` before the guard: there the first note after the clear was a soft note at 25%, with a base of about 26% (the base alone sat past the 20% soft line). No real-model run of the guard (the free daily quota of `gemini-3-flash` was used up at 00:13 UTC).

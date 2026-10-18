@@ -690,3 +690,69 @@ test("a note is not spent on a subagent's tool result: it waits for invoke_agent
   hook(dir2, chatReading(521_000, MAIN_MSGS))
   assert.match(note(hook(dir2, afterTool('read_file'))), /52%/)
 })
+
+// -- the floor guard (the Claude Code mod 0.3.5 rule): a clear or a compression that frees almost nothing --
+
+const floorMoves = dir => readLog(dir).filter(e => e.kind === 'high-floor').map(e => [e.floor, e.soft, e.strict])
+
+test('a clear that leaves the context near the lines lifts both lines ten points for that cycle', () => {
+  const dir = newDir()
+  hook(dir, afterModel(650_000))
+  hook(dir, compactNowTool('h.md'))
+  assert.equal(hook(dir, afterAgent()).decision, 'deny')
+  hook(dir, afterModel(510_000)) // the first reading after the clear: the fixed part alone is 51%
+  assert.deepEqual(hook(dir, afterTool()), {}, 'no soft note at 51')
+  hook(dir, afterModel(600_000))
+  assert.deepEqual(hook(dir, afterTool()), {}, 'no strict note at 60 either')
+  hook(dir, afterModel(610_000))
+  assert.match(note(hook(dir, afterTool())), /Context is at 61% of the window \(the line is 61%\)/)
+  assert.deepEqual(floorMoves(dir), [[51, 61, 61]])
+})
+
+test('a clear that leaves a few percent keeps the lines as set', () => {
+  const dir = newDir()
+  hook(dir, compactNowTool('h.md'))
+  assert.equal(hook(dir, afterAgent()).decision, 'deny')
+  hook(dir, afterModel(20_000)) // 2%
+  hook(dir, afterModel(500_000))
+  assert.match(note(hook(dir, afterTool())), /Context is at 50% of the window\. Plan a context reset/)
+  assert.deepEqual(floorMoves(dir), [])
+})
+
+test("Gemini CLI's own compression (a fall of 20 points) sets the floor too", () => {
+  const dir = newDir()
+  hook(dir, afterModel(800_000))
+  hook(dir, afterTool()) // the strict note at 80
+  hook(dir, afterModel(550_000)) // compressed, but only to 55%
+  assert.deepEqual(hook(dir, afterTool()), {}, 'both lines at 65: the soft one is off')
+  hook(dir, afterModel(650_000))
+  assert.match(note(hook(dir, afterTool())), /\(the line is 65%\)/)
+  assert.deepEqual(floorMoves(dir), [[55, 65, 65]])
+})
+
+test('a second clear near the lines sets a new floor and logs it again', () => {
+  const dir = newDir()
+  hook(dir, compactNowTool('h.md'))
+  assert.equal(hook(dir, afterAgent()).decision, 'deny')
+  hook(dir, afterModel(510_000))
+  hook(dir, afterTool())
+  hook(dir, afterModel(640_000)) // grown 13 points past the cleared size: a new clear is allowed
+  hook(dir, compactNowTool('h2.md'))
+  assert.equal(hook(dir, afterAgent()).decision, 'deny')
+  hook(dir, afterModel(520_000))
+  assert.deepEqual(hook(dir, afterTool()), {})
+  assert.deepEqual(floorMoves(dir), [[51, 61, 61], [52, 62, 62]])
+})
+
+test("a compression after a clear, both near the lines: each floor is logged", () => {
+  const dir = newDir()
+  hook(dir, compactNowTool('h.md'))
+  assert.equal(hook(dir, afterAgent()).decision, 'deny')
+  hook(dir, afterModel(510_000))
+  hook(dir, afterTool())
+  hook(dir, afterModel(800_000))
+  hook(dir, afterTool()) // the strict note at 80 (the line is 61)
+  hook(dir, afterModel(560_000)) // compressed, but only to 56%
+  assert.deepEqual(hook(dir, afterTool()), {})
+  assert.deepEqual(floorMoves(dir), [[51, 61, 61], [56, 66, 66]])
+})

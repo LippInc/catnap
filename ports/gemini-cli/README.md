@@ -13,6 +13,7 @@ Status: built against the hook and extension docs and the code of Gemini CLI 0.6
 - **`compact_now`** (a tool of the bundled MCP server): queues the reset and answers "Queued. End your turn now."
 - **When that turn ends** (AfterAgent hook): the extension answers `deny` with `clearContext: true` and the reason *"The conversation was just cleared at your request. Your handoff: \<file\>. Read it first, then carry on exactly where you left off."* Gemini CLI clears the model's history and sends that reason as the next prompt.
 - **Gemini CLI's own compression** is the backstop. The extension leaves `model.compressionThreshold` alone. Its default is 0.5, which is the same point as the default soft line, so Gemini CLI may compress at about the moment the first note arrives. To let the notes come first, set `model.compressionThreshold` to 0.7 or more in your own `settings.json` (restart needed), or move the extension's lines below it. A compression done by Gemini CLI shows up as a fall of 20 points or more in the token reading, which starts the note cycle over. (The `PreCompress` hook is deliberately not used: Gemini CLI fires it at every compression check, not only when it compresses.)
+- **When a clear or a compression frees almost nothing,** the notes wait. That happens when the part of a session that never goes away (the system prompt, tools, GEMINI.md) is itself near the lines. So after either one, both lines sit at least 10 points above the first reading after it, for that round, with one `high-floor` log line. A normal clear leaves a few percent, so the lines stay as set. The Claude Code mod has the same rule since 0.3.5, after a live run there compacted three times in two minutes.
 
 Differences from the Claude Code mod: no turn-end "ask" when a turn ends past the strict line without `compact_now`; no auto line (Gemini CLI has its own threshold, above); the percentage is computed from token counts the model reports, not given by the host.
 
@@ -84,7 +85,7 @@ No network calls, no model calls of its own, no processes started. It reads the 
 ## Tests
 
 ```bash
-node --test test/hooks.test.cjs     # 53 tests: the hook script and MCP server run as child processes
+node --test test/hooks.test.cjs     # 58 tests: the hook script and MCP server run as child processes
 node test/validate.cjs              # checks gemini-extension.json and hooks/hooks.json against the documented shapes
 ```
 

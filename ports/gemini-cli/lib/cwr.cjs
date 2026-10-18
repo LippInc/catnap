@@ -20,6 +20,11 @@ const QUEUED_MAX_AGE_MS = 10 * 60_000 // the MCP server's unscoped flag is adopt
 const PENDING_MAX_AGE_MS = 10 * 60_000 // a session's pending reset that nobody honoured expires after this
 const CLEAR_COOLDOWN_MS = 2 * 60_000 // a second clear sooner than this after the last one is refused while the context is small
 const CLEAR_GROWTH_POINTS = 10 // ... or while it has not grown this far past its size right after the last clear
+// After a clear or a compression the first main-chat reading is the floor: for that cycle both lines sit at least this
+// far above it, so a session whose fixed part (system prompt, tools, GEMINI.md) is near the lines is not asked to reset
+// again and again (the Claude Code mod 0.3.5 rule: there a 90K-token CLAUDE.md on a 200K window left 50-51% after each
+// compaction, and the model compacted three times in two minutes).
+const FLOOR_GAIN = 10
 const STATE_MAX_AGE_MS = 7 * 24 * 3600_000 // per-session files older than this are deleted at SessionStart
 // The first message of the main chat is Gemini CLI's environment context (getEnvironmentContext in the 0.64.0 bundle,
 // prepended by getInitialChatHistory after every reset and compression); a subagent chat does not start with it.
@@ -136,6 +141,9 @@ const freshState = () => ({
   ignoredLogged: false,
   lastClearAt: null,
   clearBase: null, // percent at the first main-chat reading after the last clear
+  floor: null, // whole percent at the first main-chat reading after the last clear or compression
+  floorNext: false, // a clear happened: the next main-chat reading sets the floor
+  floorNoted: false, // this floor's line move is logged
 })
 
 const LEGACY_KEYS = ['pending', 'handoff', 'keep', 'queuedAt'] // moved to <sid>.pending.json
@@ -238,6 +246,13 @@ const isCompactNow = input => {
   return name === TOOL_FQN || name === TOOL
 }
 
+// The lines this cycle: as set, but at least FLOOR_GAIN points above the floor (a soft line lifted to the strict one
+// is off, as when set that way).
+const linesFor = (st, cfg) =>
+  st.floor == null
+    ? { soft: cfg.soft, strict: cfg.strict }
+    : { soft: Math.max(cfg.soft, st.floor + FLOOR_GAIN), strict: Math.max(cfg.strict, st.floor + FLOOR_GAIN) }
+
 const pctOf = (st, cfg) => {
   if (!(st.tokens > 0)) return undefined
   const w = windowFor(st.model, cfg)
@@ -249,17 +264,22 @@ const dueNote = (st, cfg, dir, sid) => {
   const pct = pctOf(st, cfg)
   if (pct === undefined) return null
   const p = Math.floor(pct)
-  if (pct < cfg.strict) {
-    if (st.softNoted || cfg.soft >= cfg.strict || pct < cfg.soft) return null
+  const l = linesFor(st, cfg)
+  if (st.floor != null && !st.floorNoted && (l.soft !== cfg.soft || l.strict !== cfg.strict)) {
+    st.floorNoted = true
+    log(dir, sid, 'high-floor', { floor: st.floor, soft: l.soft, strict: l.strict })
+  }
+  if (pct < l.strict) {
+    if (st.softNoted || l.soft >= l.strict || pct < l.soft) return null
     st.softNoted = true
-    log(dir, sid, 'soft-note', { percent: p, soft: cfg.soft, strict: cfg.strict })
-    return softText(p, cfg.strict)
+    log(dir, sid, 'soft-note', { percent: p, soft: l.soft, strict: l.strict })
+    return softText(p, l.strict)
   }
   if (st.lastNote >= 0 && pct < st.lastNote + REMIND_STEP) return null
   st.softNoted = true
   st.lastNote = pct
-  log(dir, sid, 'strict-note', { percent: p, strict: cfg.strict })
-  return strictText(p, cfg.strict)
+  log(dir, sid, 'strict-note', { percent: p, strict: l.strict })
+  return strictText(p, l.strict)
 }
 
 // compact_now was called in this session: write the session's pending reset. The MCP server cannot know the session, so
@@ -353,11 +373,19 @@ const handlers = {
       st.window = windowFor(model, cfg)
       st.percent = Math.round(((total / st.window) * 100) * 10) / 10
       if (st.lastClearAt && st.clearBase == null) st.clearBase = st.percent
+      if (st.floorNext && kind !== 'other') {
+        st.floor = Math.round(st.percent)
+        st.floorNext = false
+        st.floorNoted = false
+      }
       // a fall of DROP_POINTS or more between two readings of the main chat, with nothing of ours queued: Gemini CLI's
       // own compression (or a /clear) happened, so the note cycle starts over
       if (!queued && before !== undefined && sameModel && st.percent <= before - DROP_POINTS) {
         st.softNoted = false
         st.lastNote = -1
+        st.floor = Math.round(st.percent) // this reading is the first after it
+        st.floorNext = false
+        st.floorNoted = false
         log(dir, sid, 'compacted-elsewhere', { from: Math.round(before), to: Math.round(st.percent) })
       }
     })
@@ -446,7 +474,7 @@ const handlers = {
     }
     const handoff = pend.handoff
     update(dir, sid, st => {
-      Object.assign(st, freshState(), { model: st.model, window: st.window, lastClearAt: new Date().toISOString() })
+      Object.assign(st, freshState(), { model: st.model, window: st.window, lastClearAt: new Date().toISOString(), floorNext: true })
     })
     removeFile(pendingFile(dir, sid))
     log(dir, sid, 'cleared', { handoff })
