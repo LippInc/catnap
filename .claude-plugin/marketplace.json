@@ -1,6 +1,17 @@
 {
   "name": "lippinc",
-  "owner": { "name": "Martin Lipp", "url": "https://github.com/LippInc" },
+  "owner": {
+    "name": "Martin Lipp",
+    "url": "https://github.com/LippInc"
+  },
   "description": "Claude Code mods by Martin Lipp.",
-  "plugins": [{ "name": "catnap", "source": "./" }]
+  "plugins": [
+    {
+      "name": "catnap",
+      "source": "./"
+    }
+  ],
+  "renames": {
+    "compact-when-ready": "catnap"
+  }
 }
