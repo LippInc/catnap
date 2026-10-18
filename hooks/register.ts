@@ -559,6 +559,11 @@ export const register: Register = (on, options) => {
 
   on('session.end', async ($, e, next) => {
     reset()
+    // a /clear ends the conversation but not this module (no session.start follows): the next one starts with no floor
+    floor = -1
+    floorNext = false
+    floorNoted = false
+    floorWarned = false
     return next(e)
   })
 }

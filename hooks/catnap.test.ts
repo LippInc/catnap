@@ -958,3 +958,16 @@ test("the floor after the mod's /compact (the desktop app's way) counts too, by 
   await clock.advance(1600) // the log goes to disk on the timer
   expect(floorMoves(w).map(e => [e.floor, e.threshold])).toEqual([[51, 61], [53, 63]])
 })
+
+test('a /clear ends the floor: the next conversation in the same module starts with the lines as set', async ($, on) => {
+  const { w, clock } = world(on, { pct: 52 })
+  on('session.end', ($, e) => ({ sessionId: e.sessionId })) // nothing beneath answers it otherwise
+  await start($)
+  await queueAndEnd($)
+  await clock.advance(1600)
+  w.pct = 51
+  expect((await $.tool.call(read)).context ?? []).toEqual([]) // lifted to 61
+  await $.session.end({ reason: 'clear', sessionId: 'sess-1', resume: undefined } as never)
+  w.pct = 55
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 55% of the window\. Compact at a comfortable moment before 60%/)
+})
