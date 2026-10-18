@@ -23,7 +23,7 @@ const CLEAR_GROWTH_POINTS = 10 // ... or while it has not grown this far past it
 // After a clear or a compression the first main-chat reading is the floor: for that cycle both lines sit at least this
 // far above it, so a session whose fixed part (system prompt, tools, GEMINI.md) is near the lines is not asked to reset
 // again and again (the Claude Code mod 0.3.5 rule: there a 90K-token CLAUDE.md on a 200K window left 50-51% after each
-// compaction, and the model compacted three times in two minutes).
+// compaction, and the model compacted twice in under a minute and queued a third).
 const FLOOR_GAIN = 10
 const STATE_MAX_AGE_MS = 7 * 24 * 3600_000 // per-session files older than this are deleted at SessionStart
 // The first message of the main chat is Gemini CLI's environment context (getEnvironmentContext in the 0.64.0 bundle,

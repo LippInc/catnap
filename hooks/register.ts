@@ -74,7 +74,7 @@ const DROP_POINTS = 20
 // how far above the floor the lines sit at least: a compaction normally leaves a few percent, so the lines stand as
 // set; where the session's fixed part (system prompt, tools, CLAUDE.md) is itself near the lines, a compaction frees
 // almost nothing and each note would ask for another one (live 2026-10-18: a 90K-token CLAUDE.md on a 200K window left
-// 50-51% after each compaction, and Claude compacted three times in two minutes)
+// 50-51% after each compaction, and Claude compacted twice in under a minute and queued a third)
 const FLOOR_GAIN = 10
 // $.session.compact's refusal where only a /compact run can compact (the desktop app, live 2026-10-13)
 export const isHeadlessRefusal = (err: unknown) => /not available in a headless/i.test(String(err))

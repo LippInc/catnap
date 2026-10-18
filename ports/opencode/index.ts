@@ -37,7 +37,7 @@ const REMIND_STEP = 2 // percentage points between repeated strict notes
 const SUMMARIZE_TRIES = 2 // the first try plus one retry
 const SUMMARIZE_TIMEOUT_MS = 10 * 60_000
 // how far above the floor the lines sit at least (the Claude Code mod 0.3.5 has the same rule: there a 90K-token
-// CLAUDE.md on a 200K window left 50-51% after each compaction, and the model compacted three times in two minutes)
+// CLAUDE.md on a 200K window left 50-51% after each compaction, and the model compacted twice in under a minute and queued a third)
 const FLOOR_GAIN = 10
 
 type Config = { soft: number; strict: number; window: number | undefined; off: boolean; logDir: string }

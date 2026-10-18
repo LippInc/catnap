@@ -851,8 +851,8 @@ test('the matcher answers the full tool name and nothing else', async ($, on) =>
 })
 
 // A session whose fixed part (system prompt, tools, CLAUDE.md) sits near the lines: a compaction frees almost nothing,
-// so for that cycle the lines sit ten points above where it left the context (live 2026-10-18: three compactions in
-// two minutes without this).
+// so for that cycle the lines sit ten points above where it left the context (live 2026-10-18: two compactions in under
+// a minute, and a third queued, without this).
 const floorMoves = (w: World) => logOf(w).filter(e => e.kind === 'high-floor')
 
 test('a compaction that leaves the context near the lines lifts them ten points for that cycle, with one toast', async ($, on) => {
