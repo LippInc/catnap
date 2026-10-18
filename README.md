@@ -135,7 +135,7 @@ These are the calls `claude plugin validate .` lists, and what each one is for. 
     - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` and `CATNAP_AUTO_ORIG`, for the auto line
     - `CLAUDE_DELEGATE_LEG` and `CLAUDE_HARNESS_PROBE`, markers my own wrapper scripts set; elsewhere they do nothing
   - It reads no keys, tokens or other credentials. The only conversation text its hooks read is the two fields Claude passes to `compact_now`.
-  - The `/check` command runs only when you type it. It asks Claude to run `bench/check.mjs`, which reads your local Claude Code transcript files and uses only numbers from them (token counts, timestamps, stop reasons, compaction markers), never message text. It prints a summary, writes nothing and sends nothing.
+  - The `/check` command runs only when you type it. It asks Claude to run `bench/check.mjs`, which reads your local Claude Code transcript files and uses only numbers from them (token counts, timestamps, stop reasons, compaction markers), never message text. It prints a summary, writes nothing and sends nothing. Its `allowed-tools` line lets that one command (`node` on that one script) run without a permission prompt; it allows nothing else.
 - **Other calls:** `$.clock.every` and `$.clock.now` run its timer. `$.ui.toast` shows a short notice when something fails, or when a compaction left the context near the lines.
 
 ## Tested

@@ -83,5 +83,16 @@ test('(d) re-logged duplicate message.id records are counted once', () => {
 test('output prints no paths or text', () => {
   const out = inFixture('b-linear', () => execFileSync(process.execPath, [script, '--days', '36500'], { encoding: 'utf8' }));
   assert.ok(!out.includes('fixtures') && !out.includes('s.jsonl'));
-  assert.ok(out.split('\n').length <= 14);
+  assert.ok(out.split('\n').length <= 18);
+});
+
+test('the card: measured count on line 1, the estimate labelled on line 2, the link on line 3', () => {
+  const text = (fixture) => inFixture(fixture, () => execFileSync(process.execPath, [script, '--days', '36500'], { encoding: 'utf8' })).split('\n');
+  const mid = text('c1-mid-task');
+  assert.match(mid[0], /1 of 1 auto-compaction cut Claude off mid-task\.$/);
+  assert.match(mid[1], /would re-read about \d+% less context \(estimate\)\.$/);
+  assert.match(mid[2], /github\.com\/LippInc\/catnap$/);
+  const none = text('a-short');
+  assert.match(none[0], /No auto-compactions in the last 36500 days\.$/);
+  assert.match(none[1], /would not have re-read less here\.$/);
 });

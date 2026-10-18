@@ -207,11 +207,28 @@ export function summarise(sessions, o) {
 const M = (x) => (x / 1e6).toFixed(1) + 'M';
 const P = (x) => (100 * x).toFixed(1) + '%';
 
+// Three lines sized for a screenshot: the measured count first, the estimate second and labelled as one.
+export function card(t, o) {
+  const head = !t.withCalls ? `No Claude Code sessions in the last ${o.days} days.`
+    : !t.auto ? `No auto-compactions in the last ${o.days} days.`
+    : `${t.midTask} of ${t.auto} auto-compaction${t.auto === 1 ? "" : "s"} cut Claude off mid-task.`;
+  const est = t.withCalls && t.saving > 0.0005
+    ? `A clean break at ${o.soft}% would re-read about ${Math.round(100 * t.saving)}% less context (estimate).`
+    : `Compacting at a clean break would not have re-read less here.`;
+  return [
+    ` /\\_/\\  zZ   ${head}`,
+    `( -.- )      ${est}`,
+    ` > ^ <       catnap check, your last ${o.days} days · github.com/LippInc/catnap`,
+  ].join('\n');
+}
+
 export function render(t, o) {
   const mid = t.auto ? `${t.midTask} of ${t.auto} (${P(t.midTask / t.auto)}) cut in mid-task` : 'none';
   const unk = t.unknownMid ? `, ${t.unknownMid} unknown` : '';
   return [
-    `catnap: your own history, last ${o.days} days`,
+    card(t, o),
+    '',
+    `Details:`,
     `Sessions scanned:        ${t.withCalls}   (long, past ${o.soft}% of window: ${t.long})`,
     `Auto-compactions:        ${t.auto}   (mid-task: ${mid}${unk})`,
     `Manual compactions:      ${t.manual}`,
