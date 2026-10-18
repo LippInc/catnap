@@ -31,14 +31,14 @@ You set the lines; Claude picks the moment inside them. The mod compacts nothing
 You need Claude Code v2.1.287 or later, or v2.1.286 in the desktop app. In your shell:
 
 ```bash
-claude plugin marketplace add LippInc/compact-when-ready
+claude plugin marketplace add LippInc/catnap
 ```
 
 ```bash
 claude plugin install catnap@lippinc
 ```
 
-Or from a terminal session: `/plugin install catnap --marketplace LippInc/compact-when-ready`. New sessions load it on their own, including the desktop app's Code tab. A session that is already open needs `/reload-plugins` first.
+Or from a terminal session: `/plugin install catnap --marketplace LippInc/catnap`. New sessions load it on their own, including the desktop app's Code tab. A session that is already open needs `/reload-plugins` first.
 
 catnap is a mod: code that runs with your permissions. It makes no network calls and writes only to its own state folder. Before you install it, clone the repository and run `claude plugin validate .`: it lists every event catnap hooks and every call it makes (also under [What it can reach](#what-it-can-reach)).
 
@@ -183,7 +183,7 @@ catnap collects nothing and sends nothing anywhere. It makes no network requests
 MIT, Martin Lipp ([LippInc](https://github.com/LippInc)). Not affiliated with Anthropic. If it misbehaves on your setup, an issue saying what happened is the most useful thing you can send. The session's `.log.json` helps.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/LippInc/compact-when-ready/main/docs/stamp-dark.svg">
-  <img alt="" src="https://raw.githubusercontent.com/LippInc/compact-when-ready/main/docs/stamp-light.svg" width="64">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/LippInc/catnap/main/docs/stamp-dark.svg">
+  <img alt="" src="https://raw.githubusercontent.com/LippInc/catnap/main/docs/stamp-light.svg" width="64">
 </picture> made by <a href="https://wayflare.eu">Wayflare</a>
 
