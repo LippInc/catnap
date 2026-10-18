@@ -48,7 +48,7 @@ catnap is a mod: code that runs with your permissions. It makes no network calls
 | :- | :- |
 | Claude Code | the original: a mod, everything above |
 | OpenCode | a plugin, [ports/opencode](ports/opencode). Tested live on OpenCode 1.19.0 under `opencode serve` with a free model; a bare `opencode run` exits before the compaction, and the TUI is not tested yet |
-| Gemini CLI | {{GEMINI_STATUS}} |
+| Gemini CLI | an extension, [ports/gemini-cli](ports/gemini-cli). Gemini CLI has no compaction a hook can start, so the port clears the context and the model carries on from its own handoff. One full loop live (Gemini CLI 0.64.0, `gemini-3-flash-preview`, headless); the interactive screen is not tested |
 | Codex, Cursor | partial at best: their hooks can continue a session but cannot start a compaction |
 | Windsurf | not possible today: no hook can continue a session or see context use |
 
