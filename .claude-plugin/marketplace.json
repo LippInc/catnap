@@ -8,7 +8,8 @@
   "plugins": [
     {
       "name": "catnap",
-      "source": "./"
+      "source": "./",
+      "description": "Claude naps at a clean break, not mid-task: Claude compacts its own conversation and carries on by itself."
     }
   ],
   "renames": {

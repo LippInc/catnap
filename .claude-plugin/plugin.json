@@ -11,7 +11,7 @@
   "privacyPolicyUrl": "https://github.com/LippInc/catnap#privacy",
   "termsOfServiceUrl": "https://github.com/LippInc/catnap/blob/main/LICENSE",
   "license": "MIT",
-  "keywords": ["compact", "compaction", "context", "handoff", "mod"],
+  "keywords": ["catnap", "claude-code", "compact", "compaction", "auto-compact", "context", "context-window", "handoff", "mod"],
   "userConfig": {
     "soft_percent": {
       "type": "number",

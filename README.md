@@ -15,44 +15,41 @@ wake up knowing everything.
 
 Claude Code compacts your conversation when the context window fills up, usually in the middle of a task. catnap gives Claude a heads-up at 50% instead. Claude finishes the piece it is on, writes itself a handoff note, compacts, and carries on by itself. You don't type anything.
 
-| | Without catnap | With catnap |
-| :- | :- | :- |
-| When it compacts | when the window is nearly full | when Claude finishes the piece it is on, from 50% |
-| Compactions in the middle of a task | 78 of 82 auto-compactions in the author's last 30 days of logs | none in the author's real work in 5 days with it (13 of 13 at a moment Claude picked) |
-| Right after | Claude re-reads files and works out where it was | Claude reads its own note and carries on |
-| Context re-read in long sessions | baseline | **about 30% less**\* (17.5% over a whole month, short sessions included) |
-
-\*Measured by replaying the author's 9 real long sessions with the mod against Claude Code's default auto-compact point: 33.0% less. One known bias pushes that up, so we say about 30%. Per session it ran from about 0% (sessions that ended right after compacting) to 46%. Against an auto-compact line already set to 70%, it was 16%. Most of the saving comes from compacting earlier. A lower auto-compact setting does that too, but auto-compact lands mid-task almost every time; this waits for a clean break. These are tokens re-read, not plan usage: on a subscription the saving in usage is smaller, because cache reads weigh less. Script and per-session table: [bench/REPLAY.md](bench/REPLAY.md).
-
-**Check your own history in seconds:** `/catnap:check` inside Claude Code (or `node bench/check.mjs` from a clone) reads your local Claude Code logs and prints numbers only (nothing leaves your machine) and tells you how often auto-compact cut in mid-task and what a clean-break compaction would have saved. Your number will differ: it covers all your sessions, short ones included, so it is usually lower than the long-session replay above (17.5% on the author's last 30 days). The author's last 30 days: 78 of 82 auto-compactions landed while Claude was in the middle of a tool loop. That is not bad luck: on the author's machine about 92% of Claude's calls end in a tool call, and auto-compact doesn't wait for a clean break.
-
-You set the lines; Claude picks the moment inside them. The mod compacts nothing until Claude has finished its piece and written its note (Claude Code's own auto-compact stays on as the backstop), and one setting turns it all off.
-
 ## Install
-
-You need Claude Code v2.1.287 or later, or v2.1.286 in the desktop app. In your shell:
 
 ```bash
 claude plugin marketplace add LippInc/catnap
-```
-
-```bash
 claude plugin install catnap@lippinc
 ```
 
-Or from a terminal session: `/plugin install catnap --marketplace LippInc/catnap`. New sessions load it on their own, including the desktop app's Code tab. A session that is already open needs `/reload-plugins` first.
+You need Claude Code v2.1.287 or later, or v2.1.286 in the desktop app. Inside a terminal session instead: `/plugin install catnap --marketplace LippInc/catnap`. New sessions load it on their own, including the desktop app's Code tab; a session that is already open needs `/reload-plugins` first. Only install catnap from LippInc/catnap: everything it hooks and calls is listed under [What it can reach](#what-it-can-reach).
 
-catnap is a mod: code that runs with your permissions. It makes no network calls and writes only to its own state folder. Before you install it, clone the repository and run `claude plugin validate .`: it lists every event catnap hooks and every call it makes (also under [What it can reach](#what-it-can-reach)).
+**Try it now:** type `/catnap:compact`. Claude finishes the piece it is on, writes itself a handoff, compacts, and carries on by itself. That is the whole loop, on demand.
 
-## Works with
+**After that it runs on its own.** You see nothing until the context reaches 50%: about 100K tokens on a 200K window, about 500K on a 1M window, which can take hours. Then Claude finishes its piece, writes a handoff and compacts, and a message starting with `[catnap]` tells it to carry on. You don't type anything.
 
-| Agent | Status |
-| :- | :- |
-| Claude Code | the original: a mod, everything above |
-| OpenCode | a plugin, [ports/opencode](ports/opencode). Tested live on OpenCode 1.19.0 under `opencode serve` with a free model; a bare `opencode run` exits before the compaction, and the TUI is not tested yet |
-| Gemini CLI | an extension, [ports/gemini-cli](ports/gemini-cli). Gemini CLI has no compaction a hook can start, so the port clears the context and the model carries on from its own handoff. The full loop ran live twice (Gemini CLI 0.64.0, `gemini-3-flash-preview`, headless); the interactive screen is not tested |
-| Codex, Cursor | partial at best: their hooks can continue a session but cannot start a compaction |
-| Windsurf | not possible today: no hook can continue a session or see context use |
+**Your own numbers:** `/catnap:check` reads your local Claude Code logs (numbers only; nothing leaves your machine) and starts with a card like this one, from the author's last 30 days:
+
+```text
+ /\_/\  zZ   78 of 82 auto-compactions cut Claude off mid-task.
+( -.- )      A clean break at 50% would re-read about 17% less context (estimate).
+ > ^ <       catnap check, your last 30 days · github.com/LippInc/catnap
+```
+
+If catnap saves you one "let me re-read where I was", a star helps other people find it.
+
+## Why
+
+| | Without catnap | With catnap |
+| :- | :- | :- |
+| When it compacts | when the window is nearly full | when Claude finishes the piece it is on, from 50% |
+| Compactions in the middle of a task | 78 of 82 auto-compactions in the author's last 30 days of logs | none so far in the author's own work: each one came at a moment Claude picked |
+| Right after | Claude re-reads files and works out where it was | Claude reads its own note and carries on |
+| Context re-read in long sessions | baseline | **about 30% less** |
+
+<sub>Replay of the author's long sessions (over a whole month, short sessions included: 17.5%). Method, script and per-session table: [Numbers](#numbers) and [bench/REPLAY.md](bench/REPLAY.md). Yours: `/catnap:check`.</sub>
+
+You set the lines; Claude picks the moment inside them. The mod compacts nothing until Claude has finished its piece and written its note (Claude Code's own auto-compact stays on as the backstop), and one setting turns it all off.
 
 ## What happens
 
@@ -86,6 +83,34 @@ A change there applies to sessions that start after it, or to an open one after 
 - **How the auto line works:** the mod sets `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` in Claude Code's own process, the same variable you could set yourself. While the mod is on, its setting wins over one in your settings files. That one still applies when the mod is off, so it's a good fallback to keep. Turning the mod off in `config.json`, or setting the line to `0`, puts back whatever the variable held before. Programs Claude starts from the session (Bash commands, a nested `claude`) inherit the value.
 - **Limits of the auto line:** Claude Code can only move auto-compact earlier than its own default, never later, so values near 100 do nothing. Like the notes, it is only set in a person's session (a terminal, or a desktop app chat): `claude -p` runs keep Claude Code's own setting.
 
+## Works with
+
+| Agent | Status |
+| :- | :- |
+| Claude Code | the original: a mod, everything above |
+| OpenCode | a plugin, [ports/opencode](ports/opencode). Tested live on OpenCode 1.19.0 under `opencode serve` with a free model; a bare `opencode run` exits before the compaction, and the TUI is not tested yet |
+| Gemini CLI | an extension, [ports/gemini-cli](ports/gemini-cli). Gemini CLI has no compaction a hook can start, so the port clears the context and the model carries on from its own handoff. The full loop ran live twice (Gemini CLI 0.64.0, `gemini-3-flash-preview`, headless); the interactive screen is not tested |
+
+### Port it to your agent
+
+A port needs four things from the agent's hooks: read the context percentage, add a note to a tool result the model reads, start a compaction (or clear the context) between turns, and submit a prompt after it. [ports/opencode](ports/opencode) and [ports/gemini-cli](ports/gemini-cli) show how. Where it stands elsewhere today: Codex and Cursor hooks can continue a session but cannot start a compaction, so a port would be partial at best; Windsurf has no hook that can continue a session or see context use. Pull requests are welcome.
+
+## Numbers
+
+**About 30% less context re-read** was measured by replaying the author's 9 real long sessions with the mod against Claude Code's default auto-compact point: 33.0% less. One known bias pushes that up, so we say about 30%. Per session it ran from about 0% (sessions that ended right after compacting) to 46%. Against an auto-compact line already set to 70%, it was 16%. Most of the saving comes from compacting earlier. A lower auto-compact setting does that too, but auto-compact lands mid-task almost every time; this waits for a clean break. These are tokens re-read, not plan usage: on a subscription the saving in usage is smaller, because cache reads weigh less. Script and per-session table: [bench/REPLAY.md](bench/REPLAY.md).
+
+**No compaction mid-task with catnap:** in the author's real work over 5 days with it, all 13 compactions came at a moment Claude picked, and each one carried on by itself.
+
+**Check your own history in seconds:** `/catnap:check` inside Claude Code (or `node bench/check.mjs` from a clone) reads your local Claude Code logs and prints numbers only (nothing leaves your machine) and tells you how often auto-compact cut in mid-task and what a clean-break compaction would have saved. Your number will differ: it covers all your sessions, short ones included, so it is usually lower than the long-session replay above (17.5% on the author's last 30 days). The author's last 30 days: 78 of 82 auto-compactions landed while Claude was in the middle of a tool loop. That is not bad luck: on the author's machine about 92% of Claude's calls end in a tool call, and auto-compact doesn't wait for a clean break.
+
+## FAQ
+
+- **Isn't this just auto-compact at 50%?** Most of the saving comes from compacting earlier, and a lower auto-compact setting does that too. But auto-compact lands mid-task almost every time (78 of 82 in the author's logs). catnap waits until Claude has finished the piece it is on and written its own note, so after the compaction it carries on instead of working out where it was.
+- **Why not fast-jev-compaction?** It changes what goes into the summary; catnap changes when the compaction happens. Using both together is untested.
+- **Does it cost tokens?** Each note costs a few hundred tokens, and Claude writes a handoff file. In return each compaction comes earlier and at a clean break; see [Numbers](#numbers) for what that saved in the author's sessions, and `/catnap:check` for yours.
+- **Can it compact at a bad moment?** Claude picks the moment, between your lines. If you catch it compacting at a moment you think is wrong, an issue with the session's `.log.json` is the most useful thing you can send.
+- **What if Claude Code does this itself one day?** Then uninstall catnap: `claude plugin uninstall catnap@lippinc`. Until then it works today.
+
 ## How it compacts
 
 - **In a terminal session**, the mod compacts directly, between turns.
@@ -108,7 +133,7 @@ catnap was called compact-when-ready until this rename, and its state folder was
 
 ## What it can reach
 
-These are the calls `claude plugin validate .` lists, and what each one is for. Nothing here leaves your machine: the mod makes no network requests, no model calls of its own, and starts no processes.
+catnap is a mod: code that runs with your permissions. These are the calls `claude plugin validate .` lists, and what each one is for; to check them before you install, clone the repository and run that command. Nothing here leaves your machine: the mod makes no network requests, no model calls of its own, and starts no processes.
 
 - **Hooks:**
   - `session.start` reads the settings and starts the mod's timer.
@@ -182,7 +207,7 @@ catnap collects nothing and sends nothing anywhere. It makes no network requests
 
 ## License
 
-MIT, Martin Lipp ([LippInc](https://github.com/LippInc)). Not affiliated with Anthropic. If it misbehaves on your setup, an issue saying what happened is the most useful thing you can send. The session's `.log.json` helps.
+MIT, Martin Lipp ([LippInc](https://github.com/LippInc)). Not affiliated with Anthropic. If it saved you a re-read, a star helps other people find it. If it misbehaves on your setup, an issue saying what happened is the most useful thing you can send. The session's `.log.json` helps.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/LippInc/catnap/main/docs/stamp-dark.svg">
