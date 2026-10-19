@@ -42,13 +42,25 @@ import type { PluginOptions, Register, Timer } from 'claude-code'
 //   Enterprise organization), which holds that hook back from a person's mods since 2.1.299
 //   (anthropics/claude-code#102134). The fallback: context that falls DROP_POINTS or more between two checks, with no
 //   compaction of the mod's own queued or running, was compacted some other way.
+// handoff_summary (on by default; the option, or "handoffSummary": false in config.json, turns it off): the
+//   session.compact hook answers catnap's own compaction itself, with the handoff in place of Claude Code's summary,
+//   the person's prompts word for word under it (newest first, up to PERSON_MAX characters in all), and the skills the
+//   conversation used as they were loaded (the skill.prompt hook keeps their text; the engine's own compaction adds
+//   them back too, and its other extras, the deferred-tool and agent lists and the MCP instructions, return by
+//   themselves one model response later, live 2026-10-19). No model call then summarizes the conversation: that call
+//   re-reads the whole context and writes a summary (70 s at 511K tokens in a desktop app chat, 2026-10-19). The
+//   continue prompt then only says the handoff is above. With it on catnap always compacts through /compact, which its
+//   hook sees (its own $.session.compact skips its hooks); only that compaction, in the main loop, and only when the
+//   handoff can be read; anything else goes to the engine, and where the hook is held back the engine's summary stands
+//   as before.
 // After any compaction the first percent seen is the floor: for that cycle both lines sit at least FLOOR_GAIN points
 //   above it (logged once a cycle, one toast a session when that moves a line), so a session whose fixed part is near
 //   the lines is not asked to compact again and again. The auto line stays as set.
 //
 // State folder = <state>/catnap (NAME), <state> = CLAUDE_STATE_DIR, else ~/.claude/state.
-// Config: the userConfig options (soft_percent, strict_percent, auto_percent, save_step), then config.json in the state
-//   folder ({"soft": 50, "threshold": 60, "auto": 70, "off": false}, re-read on every check, no reload needed), then a
+// Config: the userConfig options (soft_percent, strict_percent, auto_percent, save_step, fresh_start, handoff_summary),
+//   then config.json in the state folder ({"soft": 50, "threshold": 60, "auto": 70, "off": false, "fresh": false,
+//   "handoffSummary": true}, re-read on every check, no reload needed), then a
 //   per-session <session id>.config.json beside it; each later one wins. A soft line at or above the strict line is off;
 //   an auto line at or below the strict line gets one toast, since auto-compact then runs before the mod can ask.
 // Pending flag: <session id>.json = {"pending": true, ...}. A Stop hook of yours that keeps a turn going should stay
@@ -94,6 +106,14 @@ const FLOOR_GAIN = 10
 // the most of a handoff the continue prompt carries (about 8K tokens); a longer one is cut there, and the prompt says
 // where the rest is
 export const PASTE_MAX = 32_000
+// handoff_summary: the person's prompts kept under the handoff, newest first, PERSON_MAX characters in all, each cut at
+// PERSON_EACH
+export const PERSON_MAX = 12_000
+export const PERSON_EACH = 4_000
+// handoff_summary: the skills the conversation used, as they were loaded, newest first, SKILL_MAX characters in all,
+// each cut at SKILL_EACH (the engine's own compaction adds them back the same way)
+export const SKILL_MAX = 24_000
+export const SKILL_EACH = 8_000
 // $.session.compact's refusal where only a /compact run can compact (the desktop app, live 2026-10-13)
 export const isHeadlessRefusal = (err: unknown) => /not available in a headless/i.test(String(err))
 // Where a prompt comes from when a person sent it: typed at the terminal, through Remote Control, or as the SDK host's
@@ -104,7 +124,7 @@ const PERSON_ORIGINS: ReadonlySet<string> = new Set(['composer', 'bridge', 'sdk'
 // alone is not one)
 export const asksToCompact = (text: string) => /\bcompact|\bnap\b/i.test(text)
 
-type Config = { soft: number; threshold: number; auto: number; off: boolean; fresh: boolean }
+type Config = { soft: number; threshold: number; auto: number; off: boolean; fresh: boolean; handoffSummary: boolean }
 // handoff: the file it is saved in ('' when there is none); note: the handoff text Claude passed itself ('' when it
 // passed a path only)
 type Job = { handoff: string; note: string; keep: string; percent: number }
@@ -128,21 +148,27 @@ export const fromOptions = (options: PluginOptions | undefined): { base: Config;
     auto: percentOption(options?.auto_percent, DEFAULT_AUTO, 0),
     off: false,
     fresh: options?.fresh_start === true,
+    handoffSummary: options?.handoff_summary !== false,
   },
   save: typeof options?.save_step === 'string' ? options.save_step.trim() : '',
 })
 
 export const parseConfig = (texts: readonly (string | null)[], base?: Config): Config => {
-  const c: Config = base ? { ...base } : { soft: DEFAULT_SOFT, threshold: DEFAULT_THRESHOLD, auto: DEFAULT_AUTO, off: false, fresh: false }
+  const c: Config = base
+    ? { ...base }
+    : { soft: DEFAULT_SOFT, threshold: DEFAULT_THRESHOLD, auto: DEFAULT_AUTO, off: false, fresh: false, handoffSummary: true }
   for (const text of texts) {
     if (!text) continue
     try {
-      const j = JSON.parse(text) as { soft?: unknown; threshold?: unknown; auto?: unknown; off?: unknown; fresh?: unknown } | null
+      const j = JSON.parse(text) as
+        | { soft?: unknown; threshold?: unknown; auto?: unknown; off?: unknown; fresh?: unknown; handoffSummary?: unknown }
+        | null
       if (typeof j?.soft === 'number' && j.soft > 0 && j.soft < 100) c.soft = j.soft
       if (typeof j?.threshold === 'number' && j.threshold > 0 && j.threshold < 100) c.threshold = j.threshold
       if (typeof j?.auto === 'number' && j.auto >= 0 && j.auto < 100) c.auto = j.auto
       if (typeof j?.off === 'boolean') c.off = j.off
       if (typeof j?.fresh === 'boolean') c.fresh = j.fresh
+      if (typeof j?.handoffSummary === 'boolean') c.handoffSummary = j.handoffSummary
     } catch {
       // a broken config file is ignored, the defaults stand
     }
@@ -226,6 +252,74 @@ export const continueText = (job: Job, text: string | null, cut = false, fresh =
   return `${head} Here is the handoff you wrote just before it${saved}:\n\n<handoff>\n${text}${rest}\n</handoff>\n\n${CARRY_ON}`
 }
 
+// handoff_summary: the person's prompts to keep, oldest first: the newest ones, each cut at PERSON_EACH, up to
+// PERSON_MAX characters in all (the newest is kept whatever its length)
+export const keepSaid = (all: readonly string[]): string[] => {
+  const kept: string[] = []
+  let total = 0
+  for (let i = all.length - 1; i >= 0; i--) {
+    const one = all[i] ?? ''
+    const t = one.length > PERSON_EACH ? `${one.slice(0, PERSON_EACH)} [cut]` : one
+    if (kept.length > 0 && total + t.length > PERSON_MAX) break
+    kept.unshift(t)
+    total += t.length
+  }
+  return kept
+}
+
+// handoff_summary: the skills the main conversation used, by name: a typed /name (the engine's <command-name> row),
+// a Skill tool call, or a <skill> block of catnap's summary from an earlier nap. A skill only a subagent loaded is
+// not among them.
+export const skillsIn = (messages: readonly { text: string; toolUses: readonly { tool: string; input: Record<string, unknown> }[] }[]) => {
+  const names = new Set<string>()
+  for (const m of messages) {
+    for (const hit of m.text.matchAll(/<command-name>\/([^<\s]+)<\/command-name>|<skill name="([^"]+)">/g)) names.add(hit[1] ?? hit[2] ?? '')
+    for (const u of m.toolUses) if (u.tool === 'Skill' && typeof u.input.skill === 'string') names.add(u.input.skill)
+  }
+  return names
+}
+
+// handoff_summary: of the skills loaded this session (name -> text, oldest first), the ones the conversation used,
+// oldest first: the newest ones, each cut at SKILL_EACH, up to SKILL_MAX characters in all
+export const keepSkills = (loaded: ReadonlyMap<string, string>, used: ReadonlySet<string>): [string, string][] => {
+  const kept: [string, string][] = []
+  let total = 0
+  for (const [name, text] of [...loaded].filter(([n]) => used.has(n)).reverse()) {
+    const t = text.length > SKILL_EACH ? `${text.slice(0, SKILL_EACH)}\n[cut here: load the skill again for the rest]` : text
+    if (kept.length > 0 && total + t.length > SKILL_MAX) break
+    kept.unshift([name, t])
+    total += t.length
+  }
+  return kept
+}
+
+// handoff_summary: what the conversation holds after catnap's own compaction, in place of the engine's summary
+export const ownSummaryText = (
+  job: Job,
+  text: string,
+  cut: boolean,
+  said: readonly string[],
+  skills: readonly [string, string][] = [],
+) => {
+  const saved = job.handoff ? ` (saved in ${job.handoff})` : ''
+  const rest = cut ? `\n[cut here at ${PASTE_MAX} characters: read the rest in ${job.handoff} before you go on]` : ''
+  const words = said.length
+    ? `\n\nThe person's messages in this session, word for word (the latest last):\n\n${said.map(t => `<message>\n${t}\n</message>`).join('\n')}`
+    : ''
+  const loaded = skills.length
+    ? '\n\nSkills used earlier in this session, as they were loaded: keep following their standing rules where they still apply, ' +
+      `and do not redo their one-time steps.\n\n${skills.map(([n, t]) => `<skill name="${n}">\n${t}\n</skill>`).join('\n')}`
+    : ''
+  return (
+    `[${NAME}] This conversation was compacted at your request (context had reached ${job.percent}%). ` +
+    `In place of a summary, here is the handoff you wrote just before it${saved}:\n\n<handoff>\n${text}${rest}\n</handoff>${words}${loaded}`
+  )
+}
+
+// handoff_summary: the continue prompt, when the handoff already stands in the summary's place
+export const ownContinueText = (job: Job) =>
+  `[${NAME}] The conversation was just compacted at your request (context had reached ${job.percent}%). Your handoff is above, in place of a summary. ${CARRY_ON}`
+
 const instructionsFor = (job: Job) =>
   `Keep what the next turn needs to continue: ${job.keep}.` +
   (job.handoff ? ` The full state is saved in ${job.handoff}; name that path in the summary.` : '') +
@@ -274,6 +368,9 @@ export const register: Register = (on, options) => {
   let clearJob: Job | null = null // fresh start: a /clear went out for this job and has not landed yet
   let clearAt = 0
   let landedFresh = false // the landed job was a fresh start: the continue prompt says so
+  let landedOwn = false // the session.compact hook answered with the handoff (handoff_summary): a short continue prompt
+  let said: string[] = [] // the person's prompts this session, for handoff_summary (keepSaid)
+  const skillTexts = new Map<string, string>() // each skill's text as last loaded this session, oldest first (keepSkills)
   let gaveUp = false // compacting failed this cycle: no notes or asks until a compaction lands some other way
   let personAsked = false // the person's latest prompt asks for a compaction: compact_now is not held to the line
   let toast: string | null = null // a toast the timer shows (the host puts "catnap:" in front)
@@ -468,10 +565,10 @@ export const register: Register = (on, options) => {
         }
         if (slashJob && (await $.clock.now()) - slashAt > SLASH_TIMEOUT_MS) giveUp('/compact did not compact within 10 minutes')
         if (clearJob && (await $.clock.now()) - clearAt > SLASH_TIMEOUT_MS) giveUp('/clear did not run within 10 minutes')
-        const fresh = due && pending && !slashJob && !clearJob
-          ? parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base).fresh
-          : false
-        if (fresh && pending) {
+        const now = due && pending && !slashJob && !clearJob
+          ? parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base)
+          : null
+        if (now?.fresh && pending) {
           // fresh start: a /clear instead of a compaction; session.end (reason clear), or else the command's end, marks it
           // landed, and the continue prompt then opens the new conversation with the handoff
           const job = pending
@@ -495,7 +592,9 @@ export const register: Register = (on, options) => {
         }
         if (due && pending && !slashJob && !clearJob) {
           const job = pending
-          let viaSlash = useSlash
+          // handoff_summary always runs /compact: the session.compact hook below sees that one (live, the desktop app)
+          // and answers it, while catnap's own $.session.compact skips catnap's hooks (the test kit)
+          let viaSlash = useSlash || now?.handoffSummary === true
           if (!viaSlash) {
             try {
               const res = await $.session.compact({ instructions: instructionsFor(job) })
@@ -548,10 +647,18 @@ export const register: Register = (on, options) => {
           landedJob = null
           const freshStart = landedFresh
           landedFresh = false
+          const own = landedOwn
+          landedOwn = false
           sid = await $.session.id() // a fresh start runs under a new session id
-          const back = await handoffText(job, path => $.fs.read(path))
-          void $.prompt.submit({ text: continueText(job, back.text, back.cut, freshStart) })
-          log('continue-submitted', { handoffChars: back.text?.length ?? null, cut: back.cut, fresh: freshStart })
+          if (own) {
+            // the handoff already stands in the summary's place
+            void $.prompt.submit({ text: ownContinueText(job) })
+            log('continue-submitted', { own: true })
+          } else {
+            const back = await handoffText(job, path => $.fs.read(path))
+            void $.prompt.submit({ text: continueText(job, back.text, back.cut, freshStart) })
+            log('continue-submitted', { handoffChars: back.text?.length ?? null, cut: back.cut, fresh: freshStart })
+          }
         }
         if (toast !== null) {
           const text = toast
@@ -640,11 +747,27 @@ export const register: Register = (on, options) => {
   }).catch(() => ({ deny: 'compact_now failed inside the mod. Your work is saved; run /compact yourself, or call it again.' }))
 
   // A person's prompt says whether they ask for a compaction (compact_now is then not held to the line); other prompts
-  // (catnap's own, a notification, a scheduled one) leave that as it is.
+  // (catnap's own, a notification, a scheduled one) leave that as it is. The person's prompts are also kept for
+  // handoff_summary, word for word.
   on('prompt.submit', async ($, e, next) => {
-    if (PERSON_ORIGINS.has(e.origin?.kind ?? '')) personAsked = asksToCompact(e.text ?? '')
+    if (PERSON_ORIGINS.has(e.origin?.kind ?? '')) {
+      personAsked = asksToCompact(e.text ?? '')
+      const text = (e.text ?? '').trim()
+      if (text) said = keepSaid([...said, text])
+    }
     return next(e)
   })
+
+  // Each skill's text as the engine loads it (a typed /name, the Skill tool, a preload), for handoff_summary; catnap's
+  // own commands are left out. Read only: the text goes on as it was.
+  on('skill.prompt', async ($, e, next) => {
+    const r = await next(e)
+    if (e.pluginName !== $.plugin.name && !e.skill.startsWith(`${$.plugin.name}:`)) {
+      skillTexts.delete(e.skill) // the newest load last
+      skillTexts.set(e.skill, r.text)
+    }
+    return r
+  }).catch(($, e, next) => next(e))
 
   // The main loop's running turn, so a compact_now call knows which turn it belongs to.
   on('turn.start', async ($, e, next) => {
@@ -726,6 +849,21 @@ export const register: Register = (on, options) => {
   })
 
   on('session.compact', async ($, e, next) => {
+    // handoff_summary: the /compact this mod ran is answered here, with the handoff in place of the engine's summary,
+    // so no model call summarizes the conversation (see the header); a handoff that can't be read goes to the engine
+    const ours = !e.agentId && slashJob && (e.trigger === 'manual' || e.trigger === 'plugin') ? slashJob : null
+    if (ours && parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base).handoffSummary) {
+      const back = await handoffText(ours, path => $.fs.read(path))
+      if (back.text !== null) {
+        const text = ownSummaryText(ours, back.text, back.cut, said, keepSkills(skillTexts, skillsIn(e.messages)))
+        reset()
+        landedJob = ours
+        landedOwn = true
+        floorNext = true
+        log('compacted', { via: 'prompt', trigger: e.trigger, own: true, chars: text.length })
+        return { messages: [{ role: 'user' as const, text, toolUses: [] }] }
+      }
+    }
     const r = await next(e)
     const landed = !('skip' in r && r.skip !== undefined)
     if (!e.agentId && slashJob && (e.trigger === 'manual' || e.trigger === 'plugin')) {

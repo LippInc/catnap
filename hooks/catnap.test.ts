@@ -1,7 +1,22 @@
 import type { On, RenderSurface } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
-import { NAME, NAP_REPLY, PASTE_MAX, asksToCompact, autoTarget, isHeadlessRefusal, parseConfig } from './register'
+import {
+  NAME,
+  NAP_REPLY,
+  PASTE_MAX,
+  PERSON_EACH,
+  SKILL_EACH,
+  SKILL_MAX,
+  asksToCompact,
+  autoTarget,
+  fromOptions,
+  isHeadlessRefusal,
+  keepSaid,
+  keepSkills,
+  parseConfig,
+  skillsIn,
+} from './register'
 
 // The tool's full name, spelled out here and NOT taken from register.ts, so a rename that reaches only one of the two
 // files shows up: the tests under "the name trap" at the end check it against what the engine says the plugin is called.
@@ -111,6 +126,7 @@ const world = (on: On, init: Partial<World> = {}, fixture: Record<string, string
     return { value: undefined }
   })
   on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  on('skill.prompt', ($, e) => ({ text: e.text })) // the skill's text as loaded
   on('turn.complete', () => ({ text: 'done' }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -135,6 +151,11 @@ const start = async ($: Engine) => {
 }
 
 const read = { tool: 'Read', file_path: 'a.txt' } as const
+
+// Claude Code's own summary at each nap: the handoff_summary option off, as every nap ran before 0.3.9. The tests
+// that run with it are about that path (the direct $.session.compact, its retries, the full continue prompt); the
+// default path has its own tests under "handoff summary" at the end.
+const ENGINE_SUMMARY = { options: { handoff_summary: false } }
 
 test('below the soft line a tool result carries no note', async ($, on) => {
   const { w } = world(on, { pct: 49 })
@@ -191,7 +212,7 @@ test('a soft line at or above the line is off', async ($, on) => {
   expect((await $.tool.call(read)).context ?? []).toEqual([])
 })
 
-test('after a compaction the soft note comes back in the next cycle', async ($, on) => {
+test('after a compaction the soft note comes back in the next cycle', ENGINE_SUMMARY, async ($, on) => {
   const { w, clock } = world(on, { pct: 52 })
   await start($)
   expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/comfortable moment/)
@@ -224,7 +245,7 @@ test('past the line the note lands once, then again two points later', async ($,
   expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 63%/)
 })
 
-test('compact_now queues, the turn end compacts, then a continue prompt is sent', async ($, on) => {
+test('compact_now queues, the turn end compacts, then a continue prompt is sent', ENGINE_SUMMARY, async ($, on) => {
   const { w, clock, flag } = world(on, { pct: 64 })
   await start($)
   const q = await $.tool.call({ tool: TOOL, handoff: 'C:/p/.claude/handoffs/x.md', keep: 'the mod build' } as never)
@@ -248,7 +269,7 @@ test('compact_now queues, the turn end compacts, then a continue prompt is sent'
   expect(flag()?.pending).toBe(false)
 })
 
-test('a compaction refused while a turn runs is retried', async ($, on) => {
+test('a compaction refused while a turn runs is retried', ENGINE_SUMMARY, async ($, on) => {
   const { w, clock } = world(on, { pct: 64, compactFailures: 2 })
   await start($)
   await $.tool.call({ tool: TOOL, handoff: 'h.md', keep: 'k' } as never)
@@ -262,7 +283,7 @@ test('a compaction refused while a turn runs is retried', async ($, on) => {
   expect(w.prompts.length).toBe(1)
 })
 
-test('an interrupted turn keeps the compaction queued until a normal turn end', async ($, on) => {
+test('an interrupted turn keeps the compaction queued until a normal turn end', ENGINE_SUMMARY, async ($, on) => {
   const { w, clock } = world(on, { pct: 64 })
   await start($)
   await $.tool.call({ tool: TOOL, handoff: 'h.md', keep: 'k' } as never)
@@ -416,7 +437,7 @@ const queueAndEnd = async ($: Engine) => {
   await turnEnd($, 't1')
 }
 
-test('where direct compaction is refused (the desktop app), /compact runs and the continue follows its landing', async ($, on) => {
+test('where direct compaction is refused (the desktop app), /compact runs and the continue follows its landing', ENGINE_SUMMARY, async ($, on) => {
   const { w, clock, flag, release } = world(on, { pct: 64, headless: true, commandMode: 'hold' })
   await start($)
   await queueAndEnd($)
@@ -667,7 +688,7 @@ test('an auto line at or below the strict line is kept, with one toast', { optio
   expect(w.toasts[0] ?? '').toMatch(/^auto-compact \(60%\) is at or below the strict line \(60%\), so it runs before Claude is asked$/)
 })
 
-test('a host that refuses the variable write still gets its compaction and the continue', async ($, on) => {
+test('a host that refuses the variable write still gets its compaction and the continue', ENGINE_SUMMARY, async ($, on) => {
   const { w, clock, vars } = world(on, { pct: 64 }, { ...HOME, TEST_REFUSE_ENV_SET: '1' })
   await start($)
   await queueAndEnd($)
@@ -705,7 +726,19 @@ test('the auto line in the config parser and the target', () => {
 
 // The fallback for a compaction the session.compact hook does not report (a seated sec-default holds that hook back:
 // anthropics/claude-code#102134). Here the hook is simply never raised, as there.
-type LogEvent = { kind: string; via?: string; from?: number; to?: number; trigger?: string; floor?: number; soft?: number; threshold?: number }
+type LogEvent = {
+  kind: string
+  via?: string
+  from?: number
+  to?: number
+  trigger?: string
+  floor?: number
+  soft?: number
+  threshold?: number
+  percent?: number
+  line?: number
+  own?: boolean
+}
 const logOf = (w: World): LogEvent[] =>
   JSON.parse([...w.files].find(([p]) => /sess-1\.log\.json$/.test(slash(p)))?.[1] ?? '[]') as LogEvent[]
 const elsewhere = (w: World) => logOf(w).filter(e => e.kind === 'compacted-elsewhere')
@@ -768,7 +801,7 @@ test('the check right after a compaction has no percent: the next one with a num
   expect(elsewhere(w).map(e => [e.from, e.to])).toEqual([[61, 7]])
 })
 
-test("the mod's own direct compaction is not counted again as a drop", async ($, on) => {
+test("the mod's own direct compaction is not counted again as a drop", ENGINE_SUMMARY, async ($, on) => {
   const { w, clock } = world(on, { pct: 64 })
   await start($)
   await $.tool.call(read)
@@ -882,7 +915,7 @@ test('the matcher answers the full tool name and nothing else', async ($, on) =>
 // a minute, and a third queued, without this).
 const floorMoves = (w: World) => logOf(w).filter(e => e.kind === 'high-floor')
 
-test('a compaction that leaves the context near the lines lifts them ten points for that cycle, with one toast', async ($, on) => {
+test('a compaction that leaves the context near the lines lifts them ten points for that cycle, with one toast', ENGINE_SUMMARY, async ($, on) => {
   const { w, clock } = world(on, { pct: 52 })
   await start($)
   expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/comfortable moment/)
@@ -940,7 +973,7 @@ test('an auto-compaction or an unreported drop sets the floor too; the next comp
   expect(floorMoves(w).map(e => e.floor)).toEqual([55])
 })
 
-test('a second cycle near the lines lifts them again, logged again, with no second toast', async ($, on) => {
+test('a second cycle near the lines lifts them again, logged again, with no second toast', ENGINE_SUMMARY, async ($, on) => {
   const { w, clock } = world(on, { pct: 52 })
   await start($)
   await queueAndEnd($)
@@ -1009,7 +1042,7 @@ const landed = async ($: Engine, clock: { advance: (ms: number) => Promise<void>
   await clock.advance(1600) // and sends the continue prompt
 }
 
-test('a note comes back word for word in the continue prompt, and a copy is saved in the state folder', async ($, on) => {
+test('a note comes back word for word in the continue prompt, and a copy is saved in the state folder', ENGINE_SUMMARY, async ($, on) => {
   const { w, clock } = world(on, { pct: 64 })
   await start($)
   const note = 'Task: tickets T01-T40.\nDone: T01-T09, tests green.\nNext: T10 (westbrook), then T11.'
@@ -1029,7 +1062,7 @@ test('a note comes back word for word in the continue prompt, and a copy is save
   expect(p).not.toMatch(/Read it first/)
 })
 
-test("a handoff file comes back word for word (a save step's file), and nothing is written beside it", async ($, on) => {
+test("a handoff file comes back word for word (a save step's file), and nothing is written beside it", ENGINE_SUMMARY, async ($, on) => {
   const { w, clock } = world(on, { pct: 64 })
   w.files.set('C:/p/.claude/handoffs/x.md', 'RESUME - the mod build\nNext: step 3 of the plan\n')
   await start($)
@@ -1133,7 +1166,7 @@ test('a compact_now denied (no handoff) leaves the next request to the model', a
 // The notes ask for compact_now in the same response as the last action (see the header in register.ts): a write and
 // the test run beside it, with compact_now last as asked, or first.
 for (const at of ['last', 'first'] as const)
-  test(`compact_now beside other tools in one response (${at}): the next request is answered by the mod, and the nap runs`, async ($, on) => {
+  test(`compact_now beside other tools in one response (${at}): the next request is answered by the mod, and the nap runs`, ENGINE_SUMMARY, async ($, on) => {
     const { w, clock } = world(on, { pct: 64 })
     const calls = model(on)
     await start($)
@@ -1176,7 +1209,7 @@ test("below the line compact_now on Claude's own is refused, logged, and nothing
   expect(tooEarly(w).map(e => [e.percent, e.line])).toEqual([[13, 50]])
 })
 
-test('from the line on compact_now is taken with no ask', async ($, on) => {
+test('from the line on compact_now is taken with no ask', ENGINE_SUMMARY, async ($, on) => {
   const { w, clock } = world(on, { pct: 49 })
   await startQuiet($)
   expect((await nap($)).deny ?? '').toMatch(/^Not yet: context is at 49%/)
@@ -1188,7 +1221,7 @@ test('from the line on compact_now is taken with no ask', async ($, on) => {
   expect(w.prompts[0] ?? '').toMatch(/context had reached 50%/)
 })
 
-test("the person's /catnap:compact lets one nap through below the line; after it the line holds again", async ($, on) => {
+test("the person's /catnap:compact lets one nap through below the line; after it the line holds again", ENGINE_SUMMARY, async ($, on) => {
   const { w, clock } = world(on, { pct: 13 })
   await startQuiet($)
   await say($, '/catnap:compact keep the plan')
@@ -1235,7 +1268,7 @@ test("the SDK host's prompt (a desktop app chat, claude -p) is the person's", as
   expect((await nap($)).deny).toBeUndefined()
 })
 
-test('with the soft line off the strict line holds; after a compaction that freed little, the lifted line holds', async ($, on) => {
+test('with the soft line off the strict line holds; after a compaction that freed little, the lifted line holds', ENGINE_SUMMARY, async ($, on) => {
   const { w, clock } = world(on, { pct: 55 })
   w.files.set('X/state/catnap/config.json', '{"soft": 70, "threshold": 60}') // a soft line above the strict one is off
   await startQuiet($)
@@ -1356,7 +1389,7 @@ test('fresh start: a refused /clear gives up for the cycle with a toast, and not
   expect(w.toasts.some(t => /\/clear was refused/.test(t))).toBe(true)
 })
 
-test('with fresh start off (the default), the nap compacts as before', async ($, on) => {
+test('with fresh start off (the default), the nap compacts as before', ENGINE_SUMMARY, async ($, on) => {
   const { w, clock } = world(on, { pct: 64 })
   await start($)
   await $.tool.call({ tool: TOOL, note: 'n', keep: 'k' } as never)
@@ -1366,4 +1399,272 @@ test('with fresh start off (the default), the nap compacts as before', async ($,
   expect(w.commands).toEqual([])
   expect(w.compacts.length).toBe(1)
   expect(w.prompts[0] ?? '').toMatch(/just compacted at your request/)
+})
+
+// Handoff in place of the summary (on by default since 0.3.9; the option handoff_summary or config.json
+// "handoffSummary": false turns it off): catnap compacts through /compact, and its session.compact hook answers that
+// compaction with the handoff and the person's prompts, so nothing reaches the engine's summarizer; the continue prompt
+// only says the handoff is above. The tests above marked ENGINE_SUMMARY run with it off, and there the engine compacts.
+
+type Compacted = { messages?: { role: string; text: string; toolUses: unknown[] }[]; skip?: string }
+const OWN_CONTINUE =
+  '[catnap] The conversation was just compacted at your request (context had reached 64%). Your handoff is above, in place of a summary. ' +
+  'Carry on exactly where you left off, with the next step it names. If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work.'
+
+// The nap with the option on: compact_now, the turn ends, the timer runs /compact (held, as a real one runs).
+const ownNap = async ($: Engine, w: World, clock: { advance: (ms: number) => Promise<void> }, note: string, turnId = 't1') => {
+  await $.tool.call({ tool: TOOL, note, keep: 'k' } as never)
+  await turnEnd($, turnId)
+  await clock.advance(1600)
+}
+// /compact compacts: the engine raises session.compact with trigger manual
+const engineCompacts = async ($: Engine, extra: Record<string, unknown> = {}) =>
+  (await $.session.compact({ trigger: 'manual', messages: MSGS, instructions: 'x', ...extra } as never)) as Compacted
+
+test("handoff summary (the default): catnap's /compact is answered with the handoff and the person's prompts, word for word", async ($, on) => {
+  const { w, clock, release } = world(on, { pct: 64, commandMode: 'hold' }) // no option, no config file: the default
+  await startQuiet($)
+  await say($, 'Build the ticket parser; keep the CLI flags as they are.', 'sdk')
+  await say($, 'Also: T07 is blocked, skip it.')
+  await say($, 'a reminder from a plugin', 'plugin') // not the person's
+  await say($, '/catnap:compact')
+  w.prompts.splice(0) // the bottom records the plugin's prompt above
+  await ownNap($, w, clock, 'Task: the parser.\nNext: T08.')
+  expect(w.triggers).toEqual([]) // no direct call: straight to /compact
+  expect(w.commands.length).toBe(1)
+  expect(w.commands[0] ?? '').toMatch(/^\/compact Keep what the next turn needs to continue: k\./)
+  const r = await engineCompacts($)
+  expect(w.triggers).toEqual([]) // the engine's compaction never ran
+  expect(w.compacts).toEqual([])
+  expect(r.messages?.length).toBe(1)
+  expect(r.messages?.[0]?.role).toBe('user')
+  expect(r.messages?.[0]?.toolUses).toEqual([])
+  const text = r.messages?.[0]?.text ?? ''
+  expect(text).toMatch(
+    /^\[catnap\] This conversation was compacted at your request \(context had reached 64%\)\. In place of a summary, here is the handoff you wrote just before it \(saved in .*sess-1\.handoff\.md\):\n\n<handoff>\nTask: the parser\.\nNext: T08\.\n<\/handoff>\n\n/,
+  )
+  expect(text).toContain(
+    "The person's messages in this session, word for word (the latest last):\n\n" +
+      '<message>\nBuild the ticket parser; keep the CLI flags as they are.\n</message>\n' +
+      '<message>\nAlso: T07 is blocked, skip it.\n</message>\n' +
+      '<message>\n/catnap:compact\n</message>',
+  )
+  expect(text).not.toContain('a reminder from a plugin')
+  await clock.advance(1600)
+  expect(w.prompts).toEqual([OWN_CONTINUE]) // the handoff is not pasted a second time
+  release() // the command finishes after its compaction: no second continue
+  await clock.advance(3200)
+  expect(w.prompts).toEqual([OWN_CONTINUE])
+  expect(logOf(w).filter(e => e.kind === 'compacted').map(e => [e.via, e.own])).toEqual([['prompt', true]])
+  // the next nap goes the same way, and the person's prompts are still there
+  w.pct = 5
+  await $.tool.call(read)
+  w.pct = 64
+  await ownNap($, w, clock, 'Next: T09.', 't2')
+  release()
+  const again = (await engineCompacts($)).messages?.[0]?.text ?? ''
+  expect(again).toContain('<handoff>\nNext: T09.\n</handoff>')
+  expect(again).toContain('<message>\nAlso: T07 is blocked, skip it.\n</message>')
+  await clock.advance(1600)
+  expect(w.prompts).toEqual([OWN_CONTINUE, OWN_CONTINUE])
+  expect(w.compacts).toEqual([])
+})
+
+test('handoff summary: where direct compaction is refused (the desktop app) it goes the same way', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, headless: true, commandMode: 'hold' })
+  await start($)
+  await ownNap($, w, clock, 'Next: T08.')
+  expect(w.triggers).toEqual([]) // no direct call to be refused
+  expect(w.commands.length).toBe(1)
+  expect((await engineCompacts($)).messages?.[0]?.text ?? '').toContain('<handoff>\nNext: T08.\n</handoff>')
+  await clock.advance(1600)
+  expect(w.prompts).toEqual([OWN_CONTINUE])
+})
+
+test('handoff summary: where the hook never sees the compaction, the finished /compact lands it and the continue prompt carries the handoff', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64 }) // commandMode done: the command ends with no session.compact seen
+  await start($)
+  await ownNap($, w, clock, 'Next: T08.')
+  await clock.advance(1600)
+  expect(w.commands.length).toBe(1)
+  expect(w.prompts.length).toBe(1)
+  expect(w.prompts[0] ?? '').toMatch(/^\[catnap\] The conversation was just compacted at your request \(context had reached 64%\)\. Here is the handoff you wrote just before it/)
+  expect(w.prompts[0] ?? '').toContain('<handoff>\nNext: T08.\n</handoff>')
+})
+
+test("handoff summary: while catnap's /compact is out, a subagent's compaction and an auto-compact go to the engine", async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, commandMode: 'hold' })
+  await start($)
+  await ownNap($, w, clock, 'Next: T08.')
+  expect((await engineCompacts($, { agentId: 'a1', instructions: undefined })).messages?.[0]?.text).toBe('summary')
+  expect((await engineCompacts($, { trigger: 'auto', instructions: undefined })).messages?.[0]?.text).toBe('summary')
+  expect(w.triggers).toEqual(['manual', 'auto'])
+})
+
+test('handoff summary: a compaction catnap did not run (a typed /compact, auto-compact, ahead of time, another plugin) goes to the engine', async ($, on) => {
+  const { w } = world(on, { pct: 64 })
+  await start($)
+  for (const trigger of ['manual', 'auto', 'precompute', 'plugin'] as const)
+    expect((await engineCompacts($, { trigger, instructions: undefined })).messages?.[0]?.text).toBe('summary')
+  expect(w.triggers).toEqual(['manual', 'auto', 'precompute', 'plugin'])
+  expect(w.prompts).toEqual([])
+})
+
+test("handoff summary: a save step's handoff file stands in the summary's place, word for word, and nothing is written beside it", { options: { save_step: '/save-before-compact' } }, async ($, on) => {
+  const { w, clock, release } = world(on, { pct: 64, commandMode: 'hold' })
+  w.files.set('C:/p/.claude/handoffs/x.md', 'RESUME - the mod build\nNext: step 3 of the plan\n')
+  await start($)
+  await $.tool.call({ tool: TOOL, handoff: 'C:/p/.claude/handoffs/x.md', keep: 'the mod build' } as never)
+  await turnEnd($, 't1')
+  await clock.advance(1600)
+  expect(w.commands.length).toBe(1)
+  expect([...w.files.keys()].some(k => /handoff\.md$/.test(k))).toBe(false)
+  const text = (await engineCompacts($)).messages?.[0]?.text ?? ''
+  expect(text).toContain(
+    'here is the handoff you wrote just before it (saved in C:/p/.claude/handoffs/x.md):\n\n<handoff>\nRESUME - the mod build\nNext: step 3 of the plan\n</handoff>',
+  )
+  expect(w.triggers).toEqual([])
+  await clock.advance(1600)
+  release()
+  await clock.advance(1600)
+  expect(w.prompts).toEqual([OWN_CONTINUE])
+})
+
+test('handoff summary: a handoff file that cannot be read leaves the compaction to the engine', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, commandMode: 'hold' })
+  await start($)
+  await $.tool.call({ tool: TOOL, handoff: 'C:/p/.claude/handoffs/gone.md', keep: 'k' } as never)
+  await turnEnd($, 't1')
+  await clock.advance(1600)
+  expect((await engineCompacts($)).messages?.[0]?.text).toBe('summary')
+  expect(w.triggers).toEqual(['manual'])
+  await clock.advance(1600)
+  expect(w.prompts.length).toBe(1)
+  expect(w.prompts[0] ?? '').toMatch(/Your handoff: C:\/p\/\.claude\/handoffs\/gone\.md\. Read it first/)
+})
+
+test("handoff summary: the person's prompts kept are the newest, each cut, up to the cap; the option and config key", () => {
+  expect(keepSaid([])).toEqual([])
+  expect(keepSaid(['a', 'b'])).toEqual(['a', 'b'])
+  expect(keepSaid(['x'.repeat(PERSON_EACH + 50)])).toEqual([`${'x'.repeat(PERSON_EACH)} [cut]`])
+  const k = 'y'.repeat(PERSON_EACH)
+  expect(keepSaid(['first', k, k, k, 'last'])).toEqual([k, k, 'last']) // a third k would pass 12,000 characters
+  expect(fromOptions(undefined).base.handoffSummary).toBe(true) // on by default
+  expect(fromOptions({ handoff_summary: true } as never).base.handoffSummary).toBe(true)
+  expect(fromOptions({ handoff_summary: false } as never).base.handoffSummary).toBe(false)
+  expect(parseConfig([]).handoffSummary).toBe(true)
+  expect(parseConfig(['{"handoffSummary": false}']).handoffSummary).toBe(false)
+  expect(parseConfig(['{"handoffSummary": "no"}']).handoffSummary).toBe(true) // not a boolean: the default stands
+  expect(parseConfig(['{"handoffSummary": false}'], fromOptions({ handoff_summary: true } as never).base).handoffSummary).toBe(false)
+  expect(parseConfig(['{"handoffSummary": true}'], fromOptions({ handoff_summary: false } as never).base).handoffSummary).toBe(true)
+})
+
+test("handoff summary off (the option): catnap's /compact goes to the engine, and the continue prompt carries the handoff", ENGINE_SUMMARY, async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, headless: true, commandMode: 'hold' })
+  await start($)
+  await $.tool.call({ tool: TOOL, note: 'Next: T08.', keep: 'k' } as never)
+  await turnEnd($, 't1')
+  await clock.advance(1500 * 3 + 100) // three refusals: /compact
+  expect(w.commands.length).toBe(1)
+  expect((await engineCompacts($)).messages?.[0]?.text).toBe('summary')
+  expect(w.triggers.filter(t => t !== undefined)).toEqual(['manual'])
+  await clock.advance(1600)
+  expect(w.prompts.length).toBe(1)
+  expect(w.prompts[0] ?? '').toContain('<handoff>\nNext: T08.\n</handoff>')
+})
+
+test('handoff summary turned off between naps: the next nap is compacted by the engine, with the full continue prompt', async ($, on) => {
+  const { w, clock, release } = world(on, { pct: 64, commandMode: 'hold' })
+  await start($)
+  await ownNap($, w, clock, 'Next: T08.')
+  await engineCompacts($)
+  await clock.advance(1600)
+  release()
+  expect(w.prompts).toEqual([OWN_CONTINUE])
+  w.files.set(FRESH, '{"handoffSummary": false}')
+  w.pct = 5
+  await $.tool.call(read)
+  w.pct = 64
+  await $.tool.call({ tool: TOOL, note: 'Next: T09.', keep: 'k' } as never)
+  await landed($, clock, 't2')
+  expect(w.compacts.length).toBe(1) // the direct call, as before the option
+  expect(w.prompts.length).toBe(2)
+  expect(w.prompts[1] ?? '').toContain('<handoff>\nNext: T09.\n</handoff>')
+})
+
+test('handoff summary: its compaction sets the floor like any other', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, commandMode: 'hold' })
+  await start($)
+  await ownNap($, w, clock, 'Next: T08.')
+  await engineCompacts($)
+  await clock.advance(1600)
+  w.pct = 58 // the compaction freed almost nothing: the lines move to 68 for this cycle
+  await $.tool.call(read)
+  w.pct = 64
+  expect((await $.tool.call(read)).context ?? []).toEqual([])
+  w.pct = 68
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Save and compact now/)
+})
+
+// The skills the conversation used come back in the summary as they were loaded (the engine's own compaction adds
+// them back too): catnap keeps each skill's text from skill.prompt, and carries the ones the main conversation used.
+const loadSkill = ($: Engine, skill: string, text: string, pluginName?: string) =>
+  $.skill.prompt({ skill, text, frontmatter: {}, source: pluginName ? 'plugin' : 'userSettings', pluginName } as never)
+const typed = (name: string) => ({ role: 'user' as const, text: `<command-message>${name}</command-message>\n<command-name>/${name}</command-name>`, toolUses: [] })
+const viaTool = (name: string) => ({
+  role: 'assistant' as const,
+  text: '',
+  toolUses: [{ tool_use_id: `t-${name}`, tool: 'Skill', input: { skill: name } }],
+})
+
+test('handoff summary: the skills the conversation used come back as they were loaded; its own commands and a skill it never used do not', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, commandMode: 'hold' })
+  await start($)
+  await loadSkill($, 'operating-rules', 'RULES: at most 10 agents at once.')
+  await loadSkill($, 'review', 'Review the diff line by line.')
+  await loadSkill($, 'catnap:compact', 'Compact this conversation now.', 'catnap')
+  await loadSkill($, 'subagent-only', 'A subagent loaded this.')
+  await ownNap($, w, clock, 'Next: T08.')
+  const messages = [typed('operating-rules'), viaTool('review'), typed('catnap:compact'), typed('compact'), ...MSGS]
+  const text = (await engineCompacts($, { messages })).messages?.[0]?.text ?? ''
+  expect(text).toContain(
+    '\n\nSkills used earlier in this session, as they were loaded: keep following their standing rules where they still apply, and do not redo their one-time steps.\n\n' +
+      '<skill name="operating-rules">\nRULES: at most 10 agents at once.\n</skill>\n<skill name="review">\nReview the diff line by line.\n</skill>',
+  )
+  expect(text).not.toContain('Compact this conversation now.')
+  expect(text).not.toContain('A subagent loaded this.')
+  expect(text).not.toContain('<skill name="compact">') // a built-in command loads no skill text
+  // the next nap carries them again: catnap's summary is now where the conversation names them
+  await clock.advance(1600)
+  w.pct = 5
+  await $.tool.call(read)
+  w.pct = 64
+  await ownNap($, w, clock, 'Next: T09.', 't2')
+  const again = (await engineCompacts($, { messages: [{ role: 'user', text, toolUses: [] }, ...MSGS] })).messages?.[0]?.text ?? ''
+  expect(again).toContain('<skill name="operating-rules">\nRULES: at most 10 agents at once.\n</skill>')
+  expect(again).toContain('<skill name="review">\nReview the diff line by line.\n</skill>')
+})
+
+test('handoff summary: with no skill used, the summary has no skills part', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, commandMode: 'hold' })
+  await start($)
+  await loadSkill($, 'review', 'Review the diff line by line.')
+  await ownNap($, w, clock, 'Next: T08.')
+  const text = (await engineCompacts($)).messages?.[0]?.text ?? ''
+  expect(text).not.toMatch(/Skills used earlier|<skill /)
+})
+
+test('handoff summary: skillsIn and keepSkills: names from the conversation; the newest texts, each cut, up to the cap', () => {
+  expect([...skillsIn([])]).toEqual([])
+  expect([...skillsIn([typed('a'), viaTool('b'), { text: 'x <skill name="c">\ny\n</skill>', toolUses: [] }])]).toEqual(['a', 'b', 'c'])
+  expect(keepSkills(new Map(), new Set(['a']))).toEqual([])
+  const loaded = new Map([['old', 'o'], ['a', 'A'], ['unused', 'U'], ['b', 'B']])
+  expect(keepSkills(loaded, new Set(['a', 'b', 'old', 'never-loaded']))).toEqual([['old', 'o'], ['a', 'A'], ['b', 'B']])
+  const long = 'x'.repeat(SKILL_EACH + 10)
+  expect(keepSkills(new Map([['big', long]]), new Set(['big']))).toEqual([['big', `${'x'.repeat(SKILL_EACH)}\n[cut here: load the skill again for the rest]`]])
+  const k = 'y'.repeat(SKILL_EACH - 100)
+  const many = new Map([['s1', k], ['s2', k], ['s3', k], ['s4', k]])
+  const kept = keepSkills(many, new Set(['s1', 's2', 's3', 's4']))
+  expect(kept.map(([n]) => n)).toEqual(['s2', 's3', 's4']) // a fourth would pass SKILL_MAX
+  expect(kept.reduce((n, [, t]) => n + t.length, 0)).toBeLessThanOrEqual(SKILL_MAX)
 })

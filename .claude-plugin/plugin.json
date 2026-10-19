@@ -1,7 +1,7 @@
 {
   "name": "catnap",
   "displayName": "catnap",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "Claude compacts its own conversation at a clean break, then carries on by itself. A gentle note at 50% context, a strict one at 60%, Claude Code's auto-compact at 70% as the backstop, and a compact_now tool. All three lines are settings.",
   "author": { "name": "Martin Lipp", "url": "https://github.com/LippInc" },
   "homepage": "https://github.com/LippInc/catnap",
@@ -48,6 +48,12 @@
       "title": "Fresh start instead of compaction",
       "description": "Off by default. On: at each nap catnap clears the conversation instead of compacting it, and Claude carries on from its handoff alone. A nap then costs about a quarter of the tokens, but Claude keeps only its handoff: no summary of the conversation before it.",
       "default": false
+    },
+    "handoff_summary": {
+      "type": "boolean",
+      "title": "Handoff in place of the summary",
+      "description": "On by default: at a nap, Claude's handoff (with your messages, word for word, and the skills it used) stands in place of Claude Code's summary, so the nap makes no summary call and takes well under a second. Off: Claude Code writes its usual summary, and the handoff follows it.",
+      "default": true
     }
   }
 }

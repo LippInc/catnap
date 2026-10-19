@@ -58,6 +58,25 @@ that went away are the direct measure: about 5% of a run's tokens here, and 1-2%
 almost all cache reads. The difference in the totals is within noise. On 1M the 0.3.7 naps' own calls re-read 498K to
 512K each, about 2% of a run's tokens.
 
+## 200K window, catnap 0.3.9 (2026-10-19): the handoff in place of the summary
+
+Up to 0.3.8 every nap ended in Claude Code's compaction: a model call that reads the whole conversation and writes a
+summary. 0.3.9 answers its own compaction with Claude's handoff (with the person's prompts and the skills used), so
+that call is gone. Same two tasks, 3 runs each, against the 0.3.8 runs above:
+
+| setting | runs | median total | range | median at API prices | range | naps | the compaction, per nap | median time to done |
+| :- | -: | -: | :- | -: | :- | -: | :- | -: |
+| catnap 0.3.8 (Claude Code's summary) | 6 | 3.75M | 3.27M to 4.44M | $3.25 | $2.80 to $3.89 | 11 | median 19.7 s, $0.090 | 464 s |
+| catnap 0.3.9 (the handoff in its place) | 6 | 3.72M | 2.11M to 4.27M | $3.17 | $2.14 to $3.39 | 10 | 16 to 27 ms, $0 | 406 s |
+
+The per-nap figures are the direct measure: the compaction's own time (Claude Code's `compact_boundary` record) and
+the cost of its call. Over a run the naps' saving comes to about 5% of the dollars here, inside the run-to-run spread,
+so the totals show no difference. On 1M the summary call took a median 20 s and $0.16 a nap (0.3.6 and 0.3.7 runs,
+naps near 500K). Claude Code's own compaction also attaches the files read last and the lists of deferred tools,
+agents and MCP instructions again; with the handoff in its place the lists came back one model response later in all
+10 naps, and Claude re-read 6 files after naps over the 6 runs (5 with 0.3.8). After every nap Claude first checked
+its last action, then went on to the next ticket.
+
 ## 1M window (catnap 0.3.6 and 0.3.7, 2026-10-19), 250 tickets
 
 | setting | runs | median total | range | median at API prices |
@@ -87,7 +106,7 @@ asks: in its 3 runs all 6 naps came at the note, and Claude never tried an earli
 
 Per nap: exactly one catnap reply to `compact_now` and the turn ended before the compaction; the continue message
 carried the handoff; Claude's first step after it was the next step the handoff named. 200K: 17 of 17 naps in 9 runs.
-1M: 16 of 16 naps in 4 runs of 0.3.6, 6 of 6 in 3 runs of 0.3.7. 0.3.8 on 200K: 11 of 11 naps in 6 runs. With the fresh start: 16 of 16 clears in 8 runs on 200K, 12 of 12 in 4 runs on 1M. Each check was first shown to fail on a planted bad case.
+1M: 16 of 16 naps in 4 runs of 0.3.6, 6 of 6 in 3 runs of 0.3.7. 0.3.8 on 200K: 11 of 11 naps in 6 runs. 0.3.9 on 200K: 10 of 10 naps in 6 runs, with the handoff in place of the summary instead of in the continue message. With the fresh start: 16 of 16 clears in 8 runs on 200K, 12 of 12 in 4 runs on 1M. Each check was first shown to fail on a planted bad case.
 
 ## What this cannot tell
 
