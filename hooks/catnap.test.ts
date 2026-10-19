@@ -151,6 +151,10 @@ test('at the soft line the soft note lands once, then the strict note at the lin
   expect(soft).toMatch(/Context is at 50% of the window\. Compact at a comfortable moment before 60%/)
   expect(soft).toMatch(/Finish the piece you are on, and finish it properly/)
   expect(soft).toMatch(/write your handoff, call mcp__catnap__compact_now with your handoff as note/)
+  expect(soft).toMatch(
+    /\n- Make that call in the same response as the piece's last action \(for example the command that runs the tests\), as its last tool call, not in a reply of its own/,
+  )
+  expect(soft).toMatch(/You will not see that action's result before the compaction, so your handoff's next step starts with checking it\.\n/)
   expect(soft).not.toMatch(/save-before-compact/)
   expect(soft).toMatch(/compact_now/)
   expect(soft).not.toMatch(/do not wait for a better moment/)
@@ -209,6 +213,10 @@ test('past the line the note lands once, then again two points later', async ($,
   expect(first.context?.[0] ?? '').toMatch(/do not wait for a better moment/)
   expect(first.context?.[0] ?? '').toMatch(/write your handoff \(the task, what is done, the next step, open decisions and the files that matter\) straight into the note/)
   expect(first.context?.[0] ?? '').toMatch(/3\. Call mcp__catnap__compact_now with your handoff as note/)
+  expect(first.context?.[0] ?? '').toMatch(
+    /as keep\. Make that call in the same response as the step's last action \(for example the command that runs the tests\), as its last tool call, not in a reply of its own: a reply of its own reads the whole conversation once more\./,
+  )
+  expect(first.context?.[0] ?? '').toMatch(/so your handoff's next step starts with checking it\. If the step is already done, call it now\.\n4\. /)
   expect(first.context?.[0] ?? '').toMatch(/End your reply right there/)
   w.pct = 62
   expect((await $.tool.call(read)).context ?? []).toEqual([])
@@ -274,6 +282,7 @@ test('a turn that ends past the line without compact_now gets an ask, repeated o
   expect(w.prompts.length).toBe(1)
   expect(w.prompts[0] ?? '').toMatch(/Your last turn ended with context at 65%/)
   expect(w.prompts[0] ?? '').toMatch(/compact_now/)
+  expect(w.prompts[0] ?? '').toMatch(/Make that call in the same response as the step's last action .*If the step is already done, call it now\./)
   w.pct = 68
   await $.turn.complete({ reason: 'answer', isAborted: false, turnId: 't2', answer: 'ok', durationMs: 1 })
   await clock.advance(1600)
@@ -1121,6 +1130,34 @@ test('a compact_now denied (no handoff) leaves the next request to the model', a
   await clock.advance(1600)
 })
 
+// The notes ask for compact_now in the same response as the last action (see the header in register.ts): a write and
+// the test run beside it, with compact_now last as asked, or first.
+for (const at of ['last', 'first'] as const)
+  test(`compact_now beside other tools in one response (${at}): the next request is answered by the mod, and the nap runs`, async ($, on) => {
+    const { w, clock } = world(on, { pct: 64 })
+    const calls = model(on)
+    await start($)
+    await $.turn.start({ text: 'go on', turnId: 't1' })
+    expect((await step($, 't1', 0)).text).toBe('from the model')
+    const napCall = () => $.tool.call({ tool: TOOL, note: 'the handoff', keep: 'k' } as never)
+    if (at === 'first') expect((await napCall()).deny).toBeUndefined()
+    const write = await $.tool.call({ tool: 'Write', file_path: 'a.ts', content: 'x' } as never)
+    const run = await $.tool.call({ tool: 'Bash', command: 'npm test' } as never)
+    if (at === 'last') expect((await napCall()).deny).toBeUndefined()
+    expect(write.result).toBe('ok') // the other tools still ran
+    expect(run.result).toBe('ok')
+    if (at === 'first') expect((run.context ?? []).join('\n')).toMatch(/Compaction is queued/)
+    const after = await step($, 't1', 1)
+    expect(after.text).toBe(NAP_REPLY)
+    expect(after.result.stopReason).toBe('end_turn')
+    expect(calls.length).toBe(1) // the request after that response never reached the model
+    await $.turn.complete({ reason: 'answer', isAborted: false, turnId: 't1', answer: NAP_REPLY, durationMs: 1 })
+    await clock.advance(1600)
+    expect(w.compacts.length).toBe(1)
+    expect(w.prompts.length).toBe(1)
+    expect(w.prompts[0] ?? '').toMatch(/<handoff>\nthe handoff\n<\/handoff>/)
+  })
+
 // Below the line compact_now waits for the note unless the person asked (0.3.7). On a 1M window Claude napped on its
 // own at 12-47% in 5 of 8 runs of a 2026-10-19 benchmark, while the lines say 50%.
 const nap = ($: Engine) => $.tool.call({ tool: TOOL, note: 'the handoff', keep: 'k' } as never)
@@ -1234,6 +1271,9 @@ test('the tool says when to use it', async ($, on) => {
   await startQuiet($)
   expect(w.descriptions.join('\n')).toMatch(
     /Use it when a \[catnap\] note asks you to, or when the person asks for a compaction; before that, carry on: the window has room, and the note tells you when\./,
+  )
+  expect(w.descriptions.join('\n')).toMatch(
+    /no separate file is needed\. Make that call in the same response as your last action \(for example the command that runs the tests\), as its last tool call, not in a reply of its own: a reply of its own reads the whole conversation once more\. You will not see that action's result before the compaction, so your handoff's next step starts with checking it\. After calling it, end your reply at once/,
   )
 })
 

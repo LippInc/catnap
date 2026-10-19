@@ -22,6 +22,11 @@ import type { PluginOptions, Register, Timer } from 'claude-code'
 // The model request that would follow compact_now in its turn could only end the reply (the tool result says so), yet
 // it re-reads the whole context; a turn.step hook answers that one request itself with a one-line reply, so the turn
 // ends at once. Only that turn's next request in the main loop, once.
+// The notes and the tool ask for compact_now in the same response as Claude's last action (for example the command
+//   that runs the tests), not in a reply of its own, which re-reads the whole context for that one call: up to 0.3.7
+//   compact_now came alone in every benchmark nap, right after a call that wrote files and ran the tests (102-108K
+//   tokens a nap on a 200K window, 498-512K on 1M). The handoff is then written before that action's result is seen,
+//   so its next step starts with checking it. In 6 runs on 200K (2026-10-19), 10 of 11 naps rode along.
 // Below the line (the soft one, or the strict one when the soft line is off) compact_now waits for the note: called
 //   on Claude's own it is refused, unless the person's latest prompt asks for a compaction (/catnap:compact, or words
 //   like "compact now"). On a 1M window Claude otherwise napped at clean breaks long before 50%: 23 of 28 naps in a
@@ -164,11 +169,18 @@ const saveShort = (save: string): string => (save ? `run ${save}` : 'write your 
 const callWith = (save: string): string =>
   save ? "that handoff file's path as handoff" : 'your handoff as note'
 
+// compact_now in the same response as the last action (see the header); `what` names that action
+const alongside = (what: string): string =>
+  `Make that call in the same response as ${what} (for example the command that runs the tests), as its last tool call, ` +
+  'not in a reply of its own: a reply of its own reads the whole conversation once more. ' +
+  "You will not see that action's result before the compaction, so your handoff's next step starts with checking it."
+
 const steps = (tool: string, save: string): string =>
   [
     '1. Finish only the step you are on; start nothing new.',
     `2. Save everything a fresh start would need: ${saveHow(save)}.`,
-    `3. Call ${tool} with ${callWith(save)}, and what the summary must keep (the task, the next step, open decisions) as keep.`,
+    `3. Call ${tool} with ${callWith(save)}, and what the summary must keep (the task, the next step, open decisions) as keep. ` +
+      `${alongside("the step's last action")} If the step is already done, call it now.`,
     '4. End your reply right there: no more tool calls and no closing summary. The compaction runs once your turn ends, and a message then gives you your handoff back and tells you to continue.',
   ].join('\n')
 
@@ -177,6 +189,7 @@ export const softText = (p: number, t: number, tool: string, save = '') =>
     `[${NAME}] Context is at ${p}% of the window. Compact at a comfortable moment before ${t}%, where you will be told to compact at once:`,
     '- Finish the piece you are on, and finish it properly (for example the page, section or feature: done, checked, saved). Do not start the next big piece before compacting.',
     `- At that clean break: ${saveShort(save)}, call ${tool} with ${callWith(save)} and what the summary must keep, then end your reply.`,
+    `- ${alongside("the piece's last action")}`,
     '- If your reply is ending anyway (the work is done, or you are waiting on the user), that is a good moment too.',
   ].join('\n')
 
@@ -396,6 +409,7 @@ export const register: Register = (on, options) => {
         (save
           ? `Call it once everything needed to pick the work up again is saved (normally by ${save}), with the handoff file's path. `
           : `Call it with your handoff as note (${HANDOFF_PARTS}); no separate file is needed. `) +
+        `${alongside('your last action')} ` +
         'After calling it, end your reply at once: no more tool calls and no more text. Main conversation only.',
       inputSchema: {
         type: 'object',
