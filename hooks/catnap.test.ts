@@ -1,7 +1,7 @@
 import type { On, RenderSurface } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
-import { NAME, NAP_REPLY, PASTE_MAX, autoTarget, isHeadlessRefusal, parseConfig } from './register'
+import { NAME, NAP_REPLY, PASTE_MAX, asksToCompact, autoTarget, isHeadlessRefusal, parseConfig } from './register'
 
 // The tool's full name, spelled out here and NOT taken from register.ts, so a rename that reaches only one of the two
 // files shows up: the tests under "the name trap" at the end check it against what the engine says the plugin is called.
@@ -21,6 +21,7 @@ type World = {
   commands: string[] // every slash command run, as typed
   commandMode: 'done' | 'hold' | 'refuse' // a command finishes at once, waits for release(), or is refused
   toasts: string[]
+  descriptions: string[] // every registered tool's description
 }
 
 // Everything beneath the plugin: the engine's answers, held in memory.
@@ -37,6 +38,7 @@ const world = (on: On, init: Partial<World> = {}, fixture: Record<string, string
     commands: [],
     commandMode: 'done',
     toasts: [],
+    descriptions: [],
     ...init,
   }
   const clock = mock.clock(on)
@@ -72,9 +74,12 @@ const world = (on: On, init: Partial<World> = {}, fixture: Record<string, string
     w.files.set(e.path, e.text)
     return { value: undefined }
   })
-  on('tool.register', ($, e) => ({ value: { tool: `mcp__catnap__${e.name}` } }))
+  on('tool.register', ($, e) => {
+    w.descriptions.push(String(e.description ?? ''))
+    return { value: { tool: `mcp__catnap__${e.name}` } }
+  })
   on('prompt.submit', ($, e) => {
-    w.prompts.push(e.text)
+    if (e.origin?.kind !== 'composer' && e.origin?.kind !== 'sdk') w.prompts.push(e.text) // the mod's own, not the person's
     return { text: e.text }
   })
   on('session.compact', ($, e) => {
@@ -116,8 +121,18 @@ const world = (on: On, init: Partial<World> = {}, fixture: Record<string, string
   return { w, clock, flag, release, vars }
 }
 
-const start = ($: Engine) =>
-  $.session.start({ cwd: '.', surface: 'desktop', isInteractive: false })
+// The person types a prompt (at the terminal unless `kind` says otherwise).
+const say = ($: Engine, text: string, kind: 'composer' | 'sdk' | 'plugin' | 'task-notification' = 'composer') =>
+  $.prompt.submit({ text, wait: false, origin: kind === 'plugin' ? { kind, name: 'catnap', asUser: false } : { kind } } as never)
+
+// A session where the person has asked for a compaction (/catnap:compact), so compact_now is taken at any percent:
+// what most tests below need. startQuiet: no such ask, so compact_now is held to the line.
+const startQuiet = ($: Engine) => $.session.start({ cwd: '.', surface: 'desktop', isInteractive: false })
+const start = async ($: Engine) => {
+  const r = await startQuiet($)
+  await say($, '/catnap:compact')
+  return r
+}
 
 const read = { tool: 'Read', file_path: 'a.txt' } as const
 
@@ -1104,4 +1119,211 @@ test('a compact_now denied (no handoff) leaves the next request to the model', a
   expect((await step($, 't1', 1)).text).toBe('from the model')
   expect(calls.length).toBe(1)
   await clock.advance(1600)
+})
+
+// Below the line compact_now waits for the note unless the person asked (0.3.7). On a 1M window Claude napped on its
+// own at 12-47% in 5 of 8 runs of a 2026-10-19 benchmark, while the lines say 50%.
+const nap = ($: Engine) => $.tool.call({ tool: TOOL, note: 'the handoff', keep: 'k' } as never)
+const tooEarly = (w: World) => logOf(w).filter(e => e.kind === 'too-early')
+
+test("below the line compact_now on Claude's own is refused, logged, and nothing is compacted", async ($, on) => {
+  const { w, clock } = world(on, { pct: 13 })
+  await startQuiet($)
+  const r = await nap($)
+  expect(r.deny ?? '').toMatch(/^Not yet: context is at 13% of the window, below catnap's line \(50%\)\. Carry on with the work/)
+  expect(r.deny ?? '').toMatch(/Don't call mcp__catnap__compact_now again before then, unless the person asks for a compaction\./)
+  await turnEnd($, 't1')
+  await clock.advance(3200)
+  expect(w.compacts).toEqual([])
+  expect(w.prompts).toEqual([])
+  expect(tooEarly(w).map(e => [e.percent, e.line])).toEqual([[13, 50]])
+})
+
+test('from the line on compact_now is taken with no ask', async ($, on) => {
+  const { w, clock } = world(on, { pct: 49 })
+  await startQuiet($)
+  expect((await nap($)).deny ?? '').toMatch(/^Not yet: context is at 49%/)
+  w.pct = 50
+  expect((await nap($)).deny).toBeUndefined()
+  await turnEnd($, 't1')
+  await clock.advance(1600)
+  expect(w.compacts.length).toBe(1)
+  expect(w.prompts[0] ?? '').toMatch(/context had reached 50%/)
+})
+
+test("the person's /catnap:compact lets one nap through below the line; after it the line holds again", async ($, on) => {
+  const { w, clock } = world(on, { pct: 13 })
+  await startQuiet($)
+  await say($, '/catnap:compact keep the plan')
+  expect((await nap($)).deny).toBeUndefined()
+  await turnEnd($, 't1')
+  await clock.advance(1600)
+  expect(w.compacts.length).toBe(1)
+  expect(w.prompts.length).toBe(1) // the continue
+  w.pct = 6
+  expect((await $.tool.call(read)).context ?? []).toEqual([])
+  w.pct = 14
+  expect((await nap($)).deny ?? '').toMatch(/^Not yet: context is at 14%/)
+})
+
+test('words that ask for a compaction count, "catnap" alone does not, and each person prompt replaces the last', async ($, on) => {
+  const { w } = world(on, { pct: 13 })
+  await startQuiet($)
+  await say($, 'is catnap on?')
+  expect((await nap($)).deny ?? '').toMatch(/^Not yet/)
+  await say($, 'please compact now')
+  await say($, 'actually, carry on')
+  expect((await nap($)).deny ?? '').toMatch(/^Not yet/)
+  await say($, 'take a nap here')
+  expect((await nap($)).deny).toBeUndefined()
+  expect(w.compacts).toEqual([])
+})
+
+test("catnap's own prompts and notifications are not the person asking, and leave an ask standing", async ($, on) => {
+  const { w } = world(on, { pct: 13 })
+  await startQuiet($)
+  await say($, '[catnap] The conversation was just compacted at your request (context had reached 61%).', 'plugin')
+  expect((await nap($)).deny ?? '').toMatch(/^Not yet/)
+  await say($, '/catnap:compact')
+  await say($, 'Background task done: compact the logs', 'task-notification')
+  await say($, '[catnap] Your last turn ended with context at 63% of the window', 'plugin')
+  expect((await nap($)).deny).toBeUndefined()
+  expect(w.prompts.length).toBe(3) // those three reached the session; the person's own prompt is not counted there
+})
+
+test("the SDK host's prompt (a desktop app chat, claude -p) is the person's", async ($, on) => {
+  world(on, { pct: 13 })
+  await startQuiet($)
+  await say($, '/catnap:compact', 'sdk')
+  expect((await nap($)).deny).toBeUndefined()
+})
+
+test('with the soft line off the strict line holds; after a compaction that freed little, the lifted line holds', async ($, on) => {
+  const { w, clock } = world(on, { pct: 55 })
+  w.files.set('X/state/catnap/config.json', '{"soft": 70, "threshold": 60}') // a soft line above the strict one is off
+  await startQuiet($)
+  expect((await nap($)).deny ?? '').toMatch(/^Not yet: context is at 55% of the window, below catnap's line \(60%\)/)
+  w.pct = 60
+  expect((await nap($)).deny).toBeUndefined()
+  await turnEnd($, 't1')
+  await clock.advance(1600)
+  expect(w.compacts.length).toBe(1)
+  w.pct = 58 // the compaction freed almost nothing: the line moves to 68 for this cycle
+  await $.tool.call(read)
+  w.pct = 64
+  expect((await nap($)).deny ?? '').toMatch(/^Not yet: context is at 64% of the window, below catnap's line \(68%\)/)
+  w.pct = 68
+  expect((await nap($)).deny).toBeUndefined()
+})
+
+test('off in config.json, or a session where nothing draws, never holds compact_now', async ($, on) => {
+  const { w } = world(on, { pct: 13 })
+  w.files.set('X/state/catnap/config.json', '{"off": true}')
+  await startQuiet($)
+  expect((await nap($)).deny).toBeUndefined()
+})
+
+test('a plain -p run (nothing draws, not a desktop chat) never holds compact_now', async ($, on) => {
+  world(on, { pct: 13, surfaces: [] })
+  await startQuiet($)
+  expect((await nap($)).deny).toBeUndefined()
+})
+
+test('the tool says when to use it', async ($, on) => {
+  const { w } = world(on)
+  await startQuiet($)
+  expect(w.descriptions.join('\n')).toMatch(
+    /Use it when a \[catnap\] note asks you to, or when the person asks for a compaction; before that, carry on: the window has room, and the note tells you when\./,
+  )
+})
+
+test('asksToCompact: what counts as asking', () => {
+  for (const yes of ['/catnap:compact', '/compact', 'compact now', 'Compacting is fine', 'take a nap', 'NAP now'])
+    expect(asksToCompact(yes)).toBe(true)
+  for (const no of ['', 'is catnap on?', 'carry on', 'snap a photo', 'napkin math', 'catnap'])
+    expect(asksToCompact(no)).toBe(false)
+})
+
+// Fresh start (config.json "fresh": true): after compact_now the mod clears the conversation instead of compacting it,
+// and the handoff opens the new one. No compaction call, and no summary in the context from then on.
+
+const FRESH = 'X/state/catnap/config.json'
+
+test('fresh start: the nap clears the conversation instead of compacting it, and the handoff opens the new one', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64 })
+  w.files.set(FRESH, '{"fresh": true}')
+  await start($)
+  const note = 'Task: tickets T01-T40.\nDone: T01-T09, tests green.\nNext: T10 (westbrook), then T11.'
+  await $.tool.call({ tool: TOOL, note, keep: 'the ticket list' } as never)
+  await turnEnd($, 't1')
+  await clock.advance(1600) // the timer runs /clear
+  expect(w.commands).toEqual(['/clear '])
+  expect(w.compacts).toEqual([])
+  await clock.advance(1600) // and opens the new conversation
+  expect(w.prompts.length).toBe(1)
+  const p = w.prompts[0] ?? ''
+  expect(p).toMatch(/^\[catnap\] This is a fresh start: the conversation was cleared at your request \(context had reached 64%\), so you have only your handoff\. Here is the handoff you wrote just before it/)
+  expect(p).toContain(`<handoff>\n${note}\n</handoff>`)
+  expect(p).toMatch(/Carry on exactly where you left off, with the next step it names\./)
+  expect(p).not.toMatch(/compacted/)
+})
+
+test("fresh start: the clear's session end lands it; the command's later end sends nothing more", async ($, on) => {
+  const { w, clock, release } = world(on, { pct: 64, commandMode: 'hold' })
+  on('session.end', ($, e) => ({ sessionId: e.sessionId }))
+  w.files.set(FRESH, '{"fresh": true}')
+  await start($)
+  await $.tool.call({ tool: TOOL, note: 'Next: T10.', keep: 'k' } as never)
+  await turnEnd($, 't1')
+  await clock.advance(1600)
+  expect(w.commands).toEqual(['/clear '])
+  await clock.advance(1600)
+  expect(w.prompts).toEqual([]) // the clear has not happened yet
+  await $.session.end({ reason: 'clear', sessionId: 'sess-1', resume: undefined } as never)
+  await clock.advance(1600)
+  expect(w.prompts.length).toBe(1)
+  expect(w.prompts[0] ?? '').toContain('<handoff>\nNext: T10.\n</handoff>')
+  release()
+  await clock.advance(1600)
+  await clock.advance(1600)
+  expect(w.prompts.length).toBe(1)
+  expect(w.commands.length).toBe(1)
+})
+
+test('a /clear typed with nothing queued sends no continue prompt, also with fresh start on', async ($, on) => {
+  const { w, clock } = world(on, { pct: 30 })
+  on('session.end', ($, e) => ({ sessionId: e.sessionId }))
+  w.files.set(FRESH, '{"fresh": true}')
+  await start($)
+  await $.session.end({ reason: 'clear', sessionId: 'sess-1', resume: undefined } as never)
+  await clock.advance(1600)
+  await clock.advance(1600)
+  expect(w.prompts).toEqual([])
+  expect(w.commands).toEqual([])
+})
+
+test('fresh start: a refused /clear gives up for the cycle with a toast, and nothing is compacted', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, commandMode: 'refuse' })
+  w.files.set(FRESH, '{"fresh": true}')
+  await start($)
+  await $.tool.call({ tool: TOOL, note: 'n', keep: 'k' } as never)
+  await turnEnd($, 't1')
+  await clock.advance(1600)
+  await clock.advance(1600)
+  expect(w.commands).toEqual(['/clear '])
+  expect(w.compacts).toEqual([])
+  expect(w.prompts).toEqual([])
+  expect(w.toasts.some(t => /\/clear was refused/.test(t))).toBe(true)
+})
+
+test('with fresh start off (the default), the nap compacts as before', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64 })
+  await start($)
+  await $.tool.call({ tool: TOOL, note: 'n', keep: 'k' } as never)
+  await turnEnd($, 't1')
+  await clock.advance(1600)
+  await clock.advance(1600)
+  expect(w.commands).toEqual([])
+  expect(w.compacts.length).toBe(1)
+  expect(w.prompts[0] ?? '').toMatch(/just compacted at your request/)
 })

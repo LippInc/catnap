@@ -22,6 +22,10 @@ import type { PluginOptions, Register, Timer } from 'claude-code'
 // The model request that would follow compact_now in its turn could only end the reply (the tool result says so), yet
 // it re-reads the whole context; a turn.step hook answers that one request itself with a one-line reply, so the turn
 // ends at once. Only that turn's next request in the main loop, once.
+// Below the line (the soft one, or the strict one when the soft line is off) compact_now waits for the note: called
+//   on Claude's own it is refused, unless the person's latest prompt asks for a compaction (/catnap:compact, or words
+//   like "compact now"). On a 1M window Claude otherwise napped at clean breaks long before 50%: 23 of 28 naps in a
+//   2026-10-19 benchmark, at 12-47%, one run every ~20 tickets. Only in a person's session, like the notes.
 // How it compacts: $.session.compact between turns. A host that refuses that call (the desktop app's Code tab runs the
 //   engine as an SDK session: "not available in a headless (-p / SDK) session", seen live 2026-10-13) gets a
 //   /compact run through $.command.run instead (also after FALLBACK_AFTER refusals of any kind; a plugin's prompt may
@@ -87,8 +91,15 @@ const FLOOR_GAIN = 10
 export const PASTE_MAX = 32_000
 // $.session.compact's refusal where only a /compact run can compact (the desktop app, live 2026-10-13)
 export const isHeadlessRefusal = (err: unknown) => /not available in a headless/i.test(String(err))
+// Where a prompt comes from when a person sent it: typed at the terminal, through Remote Control, or as the SDK host's
+// turn (the desktop app's chats, `claude -p`). A plugin's prompt (catnap's own continue and ask) or a notification is
+// not the person asking.
+const PERSON_ORIGINS: ReadonlySet<string> = new Set(['composer', 'bridge', 'sdk', 'unclassified'])
+// A prompt that asks for a compaction: /catnap:compact, a typed /compact line, "compact now", "take a nap" ("catnap"
+// alone is not one)
+export const asksToCompact = (text: string) => /\bcompact|\bnap\b/i.test(text)
 
-type Config = { soft: number; threshold: number; auto: number; off: boolean }
+type Config = { soft: number; threshold: number; auto: number; off: boolean; fresh: boolean }
 // handoff: the file it is saved in ('' when there is none); note: the handoff text Claude passed itself ('' when it
 // passed a path only)
 type Job = { handoff: string; note: string; keep: string; percent: number }
@@ -111,20 +122,22 @@ export const fromOptions = (options: PluginOptions | undefined): { base: Config;
     threshold: percentOption(options?.strict_percent, DEFAULT_THRESHOLD),
     auto: percentOption(options?.auto_percent, DEFAULT_AUTO, 0),
     off: false,
+    fresh: options?.fresh_start === true,
   },
   save: typeof options?.save_step === 'string' ? options.save_step.trim() : '',
 })
 
 export const parseConfig = (texts: readonly (string | null)[], base?: Config): Config => {
-  const c: Config = base ? { ...base } : { soft: DEFAULT_SOFT, threshold: DEFAULT_THRESHOLD, auto: DEFAULT_AUTO, off: false }
+  const c: Config = base ? { ...base } : { soft: DEFAULT_SOFT, threshold: DEFAULT_THRESHOLD, auto: DEFAULT_AUTO, off: false, fresh: false }
   for (const text of texts) {
     if (!text) continue
     try {
-      const j = JSON.parse(text) as { soft?: unknown; threshold?: unknown; auto?: unknown; off?: unknown } | null
+      const j = JSON.parse(text) as { soft?: unknown; threshold?: unknown; auto?: unknown; off?: unknown; fresh?: unknown } | null
       if (typeof j?.soft === 'number' && j.soft > 0 && j.soft < 100) c.soft = j.soft
       if (typeof j?.threshold === 'number' && j.threshold > 0 && j.threshold < 100) c.threshold = j.threshold
       if (typeof j?.auto === 'number' && j.auto >= 0 && j.auto < 100) c.auto = j.auto
       if (typeof j?.off === 'boolean') c.off = j.off
+      if (typeof j?.fresh === 'boolean') c.fresh = j.fresh
     } catch {
       // a broken config file is ignored, the defaults stand
     }
@@ -173,6 +186,11 @@ export const noteText = (p: number, t: number, tool: string, save = '') =>
 export const askText = (p: number, t: number, tool: string, save = '') =>
   `[${NAME}] Your last turn ended with context at ${p}% of the window (the line is ${t}%). Compact before anything else, in this order:\n${steps(tool, save)}`
 
+// compact_now's answer below the line, when the person has not asked for a compaction
+export const earlyText = (p: number, line: number, tool: string) =>
+  `Not yet: context is at ${p}% of the window, below catnap's line (${line}%). Carry on with the work; a [${NAME}] note ` +
+  `will tell you when to compact. Don't call ${tool} again before then, unless the person asks for a compaction.`
+
 const QUEUED_NOTE =
   `[${NAME}] Compaction is queued. End your reply now: no more tool calls and no more text. It runs as soon as the turn ends, and a message then tells you to continue.`
 
@@ -185,8 +203,10 @@ const CARRY_ON =
 
 // The continue prompt. `text` is the handoff to give back (the note, or the file read back); null when the file could
 // not be read, and then the prompt names the file, as before 0.3.6. `cut`: the text was cut at PASTE_MAX.
-export const continueText = (job: Job, text: string | null, cut = false) => {
-  const head = `[${NAME}] The conversation was just compacted at your request (context had reached ${job.percent}%).`
+export const continueText = (job: Job, text: string | null, cut = false, fresh = false) => {
+  const head = fresh
+    ? `[${NAME}] This is a fresh start: the conversation was cleared at your request (context had reached ${job.percent}%), so you have only your handoff.`
+    : `[${NAME}] The conversation was just compacted at your request (context had reached ${job.percent}%).`
   if (text === null) return `${head} Your handoff: ${job.handoff}. Read it first, then ${CARRY_ON.charAt(0).toLowerCase()}${CARRY_ON.slice(1)}`
   const saved = job.handoff ? ` (saved in ${job.handoff})` : ''
   const rest = cut ? `\n[cut here at ${PASTE_MAX} characters: read the rest in ${job.handoff} before you go on]` : ''
@@ -238,7 +258,11 @@ export const register: Register = (on, options) => {
   let slashJob: Job | null = null // a /compact run went out for this job and has not landed yet
   let slashAt = 0
   let landedJob: Job | null = null // its compaction landed: the timer sends the continue prompt
+  let clearJob: Job | null = null // fresh start: a /clear went out for this job and has not landed yet
+  let clearAt = 0
+  let landedFresh = false // the landed job was a fresh start: the continue prompt says so
   let gaveUp = false // compacting failed this cycle: no notes or asks until a compaction lands some other way
+  let personAsked = false // the person's latest prompt asks for a compaction: compact_now is not held to the line
   let toast: string | null = null // a toast the timer shows (the host puts "catnap:" in front)
   let autoOrig = '' // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE before the mod first set it ('' = unset)
   let autoNow: string | undefined // what the variable holds now
@@ -272,7 +296,9 @@ export const register: Register = (on, options) => {
     lastPct = -1 // the mod's own compaction, or one the hook reported, is never seen again as a drop
     retries = 0
     slashJob = null
+    clearJob = null
     gaveUp = false
+    personAsked = false // a compaction landed (or the cycle started over): the ask is done
   }
   const giveUp = (reason: string) => {
     log('gave-up', { reason })
@@ -365,6 +391,8 @@ export const register: Register = (on, options) => {
       name: TOOL,
       description:
         'Compacts this conversation once your turn ends, then gives you your handoff back and tells you to continue. ' +
+        `Use it when a [${NAME}] note asks you to, or when the person asks for a compaction; before that, carry on: ` +
+        'the window has room, and the note tells you when. ' +
         (save
           ? `Call it once everything needed to pick the work up again is saved (normally by ${save}), with the handoff file's path. `
           : `Call it with your handoff as note (${HANDOFF_PARTS}); no separate file is needed. `) +
@@ -425,7 +453,33 @@ export const register: Register = (on, options) => {
           void $.prompt.submit({ text })
         }
         if (slashJob && (await $.clock.now()) - slashAt > SLASH_TIMEOUT_MS) giveUp('/compact did not compact within 10 minutes')
-        if (due && pending && !slashJob) {
+        if (clearJob && (await $.clock.now()) - clearAt > SLASH_TIMEOUT_MS) giveUp('/clear did not run within 10 minutes')
+        const fresh = due && pending && !slashJob && !clearJob
+          ? parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base).fresh
+          : false
+        if (fresh && pending) {
+          // fresh start: a /clear instead of a compaction; session.end (reason clear), or else the command's end, marks it
+          // landed, and the continue prompt then opens the new conversation with the handoff
+          const job = pending
+          clearJob = job
+          clearAt = await $.clock.now()
+          due = false
+          log('clear-submitted')
+          void $.command.run({ command: 'clear' }).then(
+            () => {
+              if (clearJob !== job) return
+              reset()
+              landedJob = job
+              landedFresh = true
+              floorNext = true
+              log('cleared', { via: 'command-result' })
+            },
+            err => {
+              if (clearJob === job) giveUp(`/clear was refused: ${String(err).slice(0, 160)}`)
+            },
+          )
+        }
+        if (due && pending && !slashJob && !clearJob) {
           const job = pending
           let viaSlash = useSlash
           if (!viaSlash) {
@@ -478,9 +532,12 @@ export const register: Register = (on, options) => {
         if (landedJob) {
           const job = landedJob
           landedJob = null
+          const freshStart = landedFresh
+          landedFresh = false
+          sid = await $.session.id() // a fresh start runs under a new session id
           const back = await handoffText(job, path => $.fs.read(path))
-          void $.prompt.submit({ text: continueText(job, back.text, back.cut) })
-          log('continue-submitted', { handoffChars: back.text?.length ?? null, cut: back.cut })
+          void $.prompt.submit({ text: continueText(job, back.text, back.cut, freshStart) })
+          log('continue-submitted', { handoffChars: back.text?.length ?? null, cut: back.cut, fresh: freshStart })
         }
         if (toast !== null) {
           const text = toast
@@ -511,6 +568,24 @@ export const register: Register = (on, options) => {
   // types list only the tools known when they were written). It must read mcp__<NAME>__<TOOL>: see NAME above.
   on('tool.call', { tool: /^mcp__catnap__compact_now$/ }, async ($, e) => {
     if (e.agentId) return { deny: 'Only the main conversation can compact itself; a subagent cannot.' }
+    // below the line, only when the person asked (see the header); where the notes never come, never held, and a check
+    // that fails lets the call through
+    let early: { percent: number; line: number } | null = null
+    try {
+      if (!personAsked && stateDir && (desktopChat || (await $.session.surfaces()).length > 0)) {
+        const pct = (await $.session.usage()).context.percent
+        const c = parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base)
+        const l = lifted(c)
+        const line = l.soft < l.threshold ? l.soft : l.threshold
+        if (!c.off && pct !== undefined && pct < line) early = { percent: pct, line }
+      }
+    } catch {
+      early = null
+    }
+    if (early) {
+      log('too-early', early)
+      return { deny: earlyText(early.percent, early.line, toolName) }
+    }
     const input = e as unknown as { note?: unknown; handoff?: unknown; keep?: unknown }
     const note = String(input.note ?? '').trim()
     let handoff = String(input.handoff ?? '').trim()
@@ -549,6 +624,13 @@ export const register: Register = (on, options) => {
         'The conversation is compacted as soon as this turn ends, and a message then tells you to continue.',
     }
   }).catch(() => ({ deny: 'compact_now failed inside the mod. Your work is saved; run /compact yourself, or call it again.' }))
+
+  // A person's prompt says whether they ask for a compaction (compact_now is then not held to the line); other prompts
+  // (catnap's own, a notification, a scheduled one) leave that as it is.
+  on('prompt.submit', async ($, e, next) => {
+    if (PERSON_ORIGINS.has(e.origin?.kind ?? '')) personAsked = asksToCompact(e.text ?? '')
+    return next(e)
+  })
 
   // The main loop's running turn, so a compact_now call knows which turn it belongs to.
   on('turn.start', async ($, e, next) => {
@@ -658,7 +740,14 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e)) // fail open: never block a compaction
 
   on('session.end', async ($, e, next) => {
+    const ours = clearJob !== null && e.reason === 'clear' ? clearJob : null
     reset()
+    if (ours) {
+      // the fresh start this mod ran: the timer opens the new conversation with the handoff
+      landedJob = ours
+      landedFresh = true
+      log('cleared', { via: 'session-end' })
+    }
     // a /clear ends the conversation but not this module (no session.start follows): the next one starts with no floor
     floor = -1
     floorNext = false
