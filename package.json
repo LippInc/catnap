@@ -1,6 +1,6 @@
 {
   "name": "@lippinc/catnap",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "private": true,
   "description": "catnap's history check without installing anything: how often Claude Code's auto-compact cut in mid-task, from your local logs. Run: npx github:LippInc/catnap",
   "license": "MIT",
