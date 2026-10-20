@@ -1409,7 +1409,9 @@ test('with fresh start off (the default), the nap compacts as before', ENGINE_SU
 type Compacted = { messages?: { role: string; text: string; toolUses: unknown[] }[]; skip?: string }
 const OWN_CONTINUE =
   '[catnap] The conversation was just compacted at your request (context had reached 64%). Your handoff is above, in place of a summary. ' +
-  'Carry on exactly where you left off, with the next step it names. If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work.'
+  'Carry on exactly where you left off, with the next step it names. ' +
+  'If you napped in the same response as your last action, the person has not had your reply on that step yet: once you have checked its result, give them that reply as you would have. ' +
+  'If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work.'
 
 // The nap with the option on: compact_now, the turn ends, the timer runs /compact (held, as a real one runs).
 const ownNap = async ($: Engine, w: World, clock: { advance: (ms: number) => Promise<void> }, note: string, turnId = 't1') => {

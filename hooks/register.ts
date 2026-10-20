@@ -239,8 +239,12 @@ const QUEUED_NOTE =
 // The reply catnap gives in Claude's place to the one model request after compact_now (see the header).
 export const NAP_REPLY = `[${NAME}] Compacting now; Claude carries on right after.`
 
+// 0.3.10: the reply line. A nap that rode along with Claude's last action came before Claude's reply on that step; in a
+// recall benchmark Claude then gave a status line instead of the reply the person had asked for, and believed it had
+// sent it (3 of 48 steps; 0 of 40 with auto-compact)
 const CARRY_ON =
   'Carry on exactly where you left off, with the next step it names. ' +
+  'If you napped in the same response as your last action, the person has not had your reply on that step yet: once you have checked its result, give them that reply as you would have. ' +
   'If the work was finished, or you were waiting on the user, say in a line or two where things stand and stop; do not start new work.'
 
 // The continue prompt. `text` is the handoff to give back (the note, or the file read back); null when the file could
