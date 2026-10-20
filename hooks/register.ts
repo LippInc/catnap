@@ -107,8 +107,9 @@ const FLOOR_GAIN = 10
 // where the rest is
 export const PASTE_MAX = 32_000
 // handoff_summary: the person's prompts kept under the handoff, newest first, PERSON_MAX characters in all, each cut at
-// PERSON_EACH
-export const PERSON_MAX = 12_000
+// PERSON_EACH. 0.3.10: 48,000 (was 12,000): in a recall benchmark with chatty ~1,100-character messages, 12,000 kept
+// only the last ten or so, and an instruction older than that reached Claude only if its handoff repeated it
+export const PERSON_MAX = 48_000
 export const PERSON_EACH = 4_000
 // handoff_summary: the skills the conversation used, as they were loaded, newest first, SKILL_MAX characters in all,
 // each cut at SKILL_EACH (the engine's own compaction adds them back the same way)
@@ -183,7 +184,9 @@ export const autoTarget = (c: Config, orig: string): { value: string | undefined
 
 // How to save, in the notes: the save_step command when one is set (it writes a handoff file), else the handoff goes
 // straight into compact_now's `note`.
-const HANDOFF_PARTS = 'the task, what is done, the next step, open decisions and the files that matter'
+// 0.3.10: the person's standing instructions too, since their oldest prompts can fall past PERSON_MAX
+const HANDOFF_PARTS =
+  'the task, what is done, the next step, open decisions, the files that matter, and every instruction from the person that still applies, in their words'
 const saveHow = (save: string): string =>
   save
     ? `run ${save} (it writes the handoff file and anything else not yet saved)`

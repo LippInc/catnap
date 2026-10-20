@@ -232,7 +232,7 @@ test('past the line the note lands once, then again two points later', async ($,
   const first = await $.tool.call(read)
   expect(first.context?.[0] ?? '').toMatch(/Context is at 61% of the window \(the line is 60%\)/)
   expect(first.context?.[0] ?? '').toMatch(/do not wait for a better moment/)
-  expect(first.context?.[0] ?? '').toMatch(/write your handoff \(the task, what is done, the next step, open decisions and the files that matter\) straight into the note/)
+  expect(first.context?.[0] ?? '').toMatch(/write your handoff \(the task, what is done, the next step, open decisions, the files that matter, and every instruction from the person that still applies, in their words\) straight into the note/)
   expect(first.context?.[0] ?? '').toMatch(/3\. Call mcp__catnap__compact_now with your handoff as note/)
   expect(first.context?.[0] ?? '').toMatch(
     /as keep\. Make that call in the same response as the step's last action \(for example the command that runs the tests\), as its last tool call, not in a reply of its own: a reply of its own reads the whole conversation once more\./,
@@ -1548,7 +1548,9 @@ test("handoff summary: the person's prompts kept are the newest, each cut, up to
   expect(keepSaid(['a', 'b'])).toEqual(['a', 'b'])
   expect(keepSaid(['x'.repeat(PERSON_EACH + 50)])).toEqual([`${'x'.repeat(PERSON_EACH)} [cut]`])
   const k = 'y'.repeat(PERSON_EACH)
-  expect(keepSaid(['first', k, k, k, 'last'])).toEqual([k, k, 'last']) // a third k would pass 12,000 characters
+  expect(keepSaid(['first', k, k, k, 'last'])).toEqual(['first', k, k, k, 'last']) // 12,009 characters: all kept
+  const many = Array<string>(13).fill(k)
+  expect(keepSaid(['first', ...many, 'last'])).toEqual([...Array<string>(11).fill(k), 'last']) // a twelfth k would pass 48,000
   expect(fromOptions(undefined).base.handoffSummary).toBe(true) // on by default
   expect(fromOptions({ handoff_summary: true } as never).base.handoffSummary).toBe(true)
   expect(fromOptions({ handoff_summary: false } as never).base.handoffSummary).toBe(false)
