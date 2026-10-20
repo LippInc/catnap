@@ -43,12 +43,12 @@ If catnap saves you one "let me re-read where I was", a star helps other people 
 | | Without catnap | With catnap |
 | :- | :- | :- |
 | When it compacts | when the window is nearly full | when Claude finishes the piece it is on, from 50% |
-| Compactions in the middle of a task | 78 of 82 auto-compactions in the author's last 30 days of logs | none so far in the author's own work: each one came at a moment Claude picked |
+| Compactions in the middle of a task | 78 of 82 auto-compactions in the author's last 30 days of logs; 29 of 29 in the benchmark | **0 of 129** naps: each came after Claude finished its piece and ended its turn (98 in the benchmarks, 31 in the author's own sessions) |
 | The compaction itself | a model call reads the whole conversation and writes a summary: about 20 seconds a nap in the benchmarks, over a minute in the author's own chats at 500K | **no model call**: Claude's note stands in place of the summary, in well under a second |
 | Right after | Claude carries on from Claude Code's summary of the conversation | Claude carries on from the note it wrote at the clean break, word for word, with your messages |
-| Context re-read in long sessions | baseline | **about 30% less** |
+| Cost | auto-compact set to cut at the same point | **the same**, in tokens and in dollars |
 
-<sub>Replay of the author's long sessions (over a whole month, short sessions included: 17.5%). Method, script and per-session table: [Numbers](#numbers) and [bench/REPLAY.md](bench/REPLAY.md). Yours: `/catnap:check`.</sub>
+<sub>Cost: the same coding tasks run both ways to the end, on 200K and 1M windows ([bench/PAIRED.md](bench/PAIRED.md)). Against Claude Code's default point, which on a 1M window cuts near 965K, catnap used 56% fewer tokens; that saving comes from cutting earlier, which a lower auto-compact setting also gets you. Your own history: `/catnap:check`.</sub>
 
 You set the lines; Claude picks the moment inside them. The mod compacts nothing until Claude has finished its piece and written its note (Claude Code's own auto-compact stays on as the backstop), and one setting turns it all off.
 
