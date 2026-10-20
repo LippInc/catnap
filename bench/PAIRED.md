@@ -108,6 +108,17 @@ Per nap: exactly one catnap reply to `compact_now` and the turn ended before the
 carried the handoff; Claude's first step after it was the next step the handoff named. 200K: 17 of 17 naps in 9 runs.
 1M: 16 of 16 naps in 4 runs of 0.3.6, 6 of 6 in 3 runs of 0.3.7. 0.3.8 on 200K: 11 of 11 naps in 6 runs. 0.3.9 on 200K: 10 of 10 naps in 6 runs, with the handoff in place of the summary instead of in the continue message. With the fresh start: 16 of 16 clears in 8 runs on 200K, 12 of 12 in 4 runs on 1M. Each check was first shown to fail on a planted bad case.
 
+## Where the cut lands
+
+An earlier round on 200K (catnap 0.3.5, 2026-10-18, 22 runs of the same two tasks against auto-compact at 50% and
+70% and Claude Code's default point) classed every compaction by the call before it: mid-task if that call ended in a
+tool call, so Claude was in the middle of a tool loop, and a clean break if Claude had ended its turn. All 29
+auto-compactions were mid-task (17 at 50%, 8 at 70%, 4 at the default point), and all 10 of catnap's naps came at a
+clean break. Every nap in the sections above came after Claude called `compact_now` itself and its turn ended, which is
+how catnap works: with those 10, 98 naps in these benchmarks and none cut in mid-task. On these tasks a mid-task
+compaction cost nothing visible: in every setting Claude needed a median of at most one read-only call after a
+compaction before it went back to work.
+
 ## What this cannot tell
 
 - Real work: these are synthetic tasks where every ticket ends at an obvious clean break.

@@ -4,7 +4,7 @@
 
 **Claude naps at a clean break. Not mid-task.**
 
-https://github.com/user-attachments/assets/af24e695-92bb-458e-8c96-b13c004616e2
+https://github.com/user-attachments/assets/68464fdd-e1fc-4e91-88a5-a71286eb9c08
 
 ```text
 finish the thought.
@@ -107,7 +107,7 @@ A port needs four things from the agent's hooks: read the context percentage, ad
 
 **No summary call since 0.3.9:** up to 0.3.8 every nap ended in Claude Code's compaction, a model call that reads the whole conversation and writes a summary. In the benchmarks that took a median 19.7 seconds and $0.09 at API prices on a 200K window, and $0.16 on 1M; in the author's own desktop chats, at about 500K, 62 to 80 seconds. With the handoff in its place a nap took 16 to 27 milliseconds and no model call. In 6 runs on 200K the median time to finish a task was 406 seconds, against 464 with 0.3.8; the run totals stayed within noise. Every run finished with all tests passing, and after every nap Claude first checked its last action, then went on to the next ticket.
 
-**No compaction mid-task with catnap:** in the author's real work over 5 days with it, all 13 compactions came at a moment Claude picked, and each one carried on by itself.
+**No compaction mid-task with catnap:** in the author's own sessions from 2026-10-13 to 10-19, all 31 naps came after Claude's turn had ended, and each one carried on by itself. In the benchmarks, 0 of 98 naps came mid-task, against 29 of 29 auto-compactions ([bench/PAIRED.md](bench/PAIRED.md#where-the-cut-lands)).
 
 **Check your own history in seconds:** `/catnap:check` inside Claude Code (or `npx github:LippInc/catnap` with nothing installed, or `node bench/check.mjs` from a clone) reads your local Claude Code logs and prints numbers only (nothing leaves your machine) and tells you how often auto-compact cut in mid-task and what a clean-break compaction would have saved. Your number will differ: it covers all your sessions, short ones included, so it is usually lower than the long-session replay above (17.5% on the author's last 30 days). The author's last 30 days: 78 of 82 auto-compactions landed while Claude was in the middle of a tool loop. That is not bad luck: on the author's machine about 92% of Claude's calls end in a tool call, and auto-compact doesn't wait for a clean break.
 
