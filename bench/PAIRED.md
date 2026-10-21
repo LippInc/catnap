@@ -86,10 +86,16 @@ its last action, then went on to the next ticket.
 | catnap 0.3.6 + fresh start | 3 | 51.7M | 32.5M to 56.4M | $24.22 |
 | catnap 0.3.7 (naps at 501-514K) | 3 | 51.2M | 46.8M to 66.6M | $23.83 |
 | Claude Code's default point (cuts near 965K) | 3 | 115.4M | 83.2M to 125.7M | $37.81 |
+| auto-compact 15% (6 to 11 cuts a run, near 147K) | 3 | 26.6M | 13.6M to 28.3M | $18.20 |
 
 catnap against the default: 61% fewer tokens (0.3.6) and 56% fewer (0.3.7), 40% and 37% fewer dollars; auto-compact at
 50% gets 60% fewer tokens: on a 1M window the saving is where the cut lands. catnap (either version) against auto-compact at 50%: within noise (three identical auto-compact runs ranged from 23.9M to 66.5M,
 because the same 250 tickets took them 92 to 274 calls, depending on how Claude batched the work).
+
+Where the cut lands sets what each call carries: calls times mean context make up 87-100% of every total, and the mean
+context per call was 435K to 481K in the runs cut near 965K, 238K to 246K near 490K, and 91K to 94K near 147K, where
+the cuts themselves took 12-23% of the tokens. That is why catnap 0.3.11 adds token lines and naps at 300K on 1M
+(strict 400K, auto-compact 500K): between the two measured points, not yet measured to the end of a task.
 
 Per cut, at matched points (cuts at 440-530K, counting the 100 calls after each): an auto-compaction cost 1.96M tokens
 and a catnap nap 1.92M. catnap's extra call (Claude writing its handoff) is offset by what comes back after the

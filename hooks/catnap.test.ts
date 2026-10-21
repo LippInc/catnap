@@ -10,6 +10,7 @@ import {
   SKILL_MAX,
   asksToCompact,
   autoTarget,
+  capped,
   fromOptions,
   isHeadlessRefusal,
   keepSaid,
@@ -26,6 +27,7 @@ const slash = (p: string) => p.split('\\').join('/') // the engine hands paths o
 
 type World = {
   pct: number | undefined
+  window: number // the model's context window in tokens
   surfaces: RenderSurface[]
   files: Map<string, string>
   prompts: string[]
@@ -43,6 +45,8 @@ type World = {
 const world = (on: On, init: Partial<World> = {}, fixture: Record<string, string> = { USERPROFILE: 'C:\\Users\\tester' }) => {
   const w: World = {
     pct: 10,
+    // 200K: the percent lines come first there, as before 0.3.11; the token lines have their own tests on 1M
+    window: 200_000,
     surfaces: ['desktop'],
     files: new Map(),
     prompts: [],
@@ -75,7 +79,9 @@ const world = (on: On, init: Partial<World> = {}, fixture: Record<string, string
     value: {
       startedAt: 0,
       context:
-        w.pct === undefined ? { window: 1_000_000 } : { window: 1_000_000, tokens: w.pct * 10_000, percent: w.pct },
+        w.pct === undefined
+          ? { window: w.window }
+          : { window: w.window, tokens: (w.pct * w.window) / 100, percent: w.pct },
       rateLimits: [],
     },
   }))
@@ -1671,4 +1677,160 @@ test('handoff summary: skillsIn and keepSkills: names from the conversation; the
   const kept = keepSkills(many, new Set(['s1', 's2', 's3', 's4']))
   expect(kept.map(([n]) => n)).toEqual(['s2', 's3', 's4']) // a fourth would pass SKILL_MAX
   expect(kept.reduce((n, [, t]) => n + t.length, 0)).toBeLessThanOrEqual(SKILL_MAX)
+})
+
+// The token lines (0.3.11): each line also has a size in tokens, and whichever comes first counts. On a 1M window the
+// defaults put the lines at 300K, 400K and 500K (30, 40 and 50%); on 200K the percent lines come first, as in every test
+// above.
+const M1 = { window: 1_000_000 }
+
+test('token lines: on a 1M window the soft note comes at 300K, the strict one at 400K, auto-compact at 500K', async ($, on) => {
+  const { w, clock, vars } = world(on, { ...M1, pct: 29 })
+  await start($)
+  expect((await $.tool.call(read)).context ?? []).toEqual([])
+  await clock.advance(1600)
+  expect(vars.get(AUTO)).toBe('50')
+  w.pct = 30
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 30% of the window\. Compact at a comfortable moment before 40%/)
+  w.pct = 39
+  expect((await $.tool.call(read)).context ?? []).toEqual([])
+  w.pct = 40
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 40% of the window \(the line is 40%\)\. Save and compact now/)
+  await clock.advance(1600)
+  expect(w.toasts).toEqual([]) // auto (50) sits above the strict line (40)
+})
+
+test('token lines: on 1M the auto line is 50 from the start, before any tool call', async ($, on) => {
+  const { clock, vars } = world(on, M1)
+  await start($)
+  await clock.advance(1600)
+  expect(vars.get(AUTO)).toBe('50')
+})
+
+test('token lines: on 1M a turn that ends past 400K gets the ask; one that ends below it does not', async ($, on) => {
+  const { w, clock } = world(on, { ...M1, pct: 39 })
+  await start($)
+  await turnEnd($, 't1')
+  await clock.advance(1600)
+  expect(w.prompts).toEqual([])
+  w.pct = 41
+  await turnEnd($, 't2')
+  await clock.advance(1600)
+  expect(w.prompts.length).toBe(1)
+  expect(w.prompts[0] ?? '').toMatch(/Your last turn ended with context at 41% of the window \(the line is 40%\)/)
+})
+
+test('token lines: on 1M compact_now waits for 300K, not 50%', ENGINE_SUMMARY, async ($, on) => {
+  const { w } = world(on, { ...M1, pct: 29 })
+  await startQuiet($)
+  expect((await nap($)).deny ?? '').toMatch(/^Not yet: context is at 29% of the window, below catnap's line \(30%\)/)
+  w.pct = 30
+  expect((await nap($)).deny).toBeUndefined()
+})
+
+test(
+  'token lines: a percent line that comes first still counts',
+  { options: { soft_percent: 20, strict_percent: 35, auto_percent: 45 } },
+  async ($, on) => {
+    const { w, clock, vars } = world(on, { ...M1, pct: 20 })
+    await start($)
+    expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 20% of the window\. Compact at a comfortable moment before 35%/)
+    await clock.advance(1600)
+    expect(vars.get(AUTO)).toBe('45')
+    w.pct = 35
+    expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/\(the line is 35%\)\. Save and compact now/)
+  },
+)
+
+test(
+  'token lines: soft_tokens moves the soft line; strict_tokens and auto_tokens 0 leave the percent lines',
+  { options: { soft_tokens: 200_000, strict_tokens: 0, auto_tokens: 0 } },
+  async ($, on) => {
+    const { w, clock, vars } = world(on, { ...M1, pct: 19 })
+    await start($)
+    expect((await $.tool.call(read)).context ?? []).toEqual([])
+    await clock.advance(1600)
+    expect(vars.get(AUTO)).toBe('70')
+    w.pct = 20
+    expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 20% of the window\. Compact at a comfortable moment before 60%/)
+    w.pct = 59
+    expect((await $.tool.call(read)).context ?? []).toEqual([])
+    w.pct = 60
+    expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/\(the line is 60%\)\. Save and compact now/)
+  },
+)
+
+test('token lines: config.json wins over the options and is re-read at each check', async ($, on) => {
+  const { w, clock, vars } = world(on, { ...M1, pct: 31 })
+  w.files.set('X/state/catnap/config.json', '{"softTokens": 0, "thresholdTokens": 0, "autoTokens": 0}')
+  await start($)
+  expect((await $.tool.call(read)).context ?? []).toEqual([]) // 50% is the soft line again
+  await clock.advance(1600)
+  expect(vars.get(AUTO)).toBe('70')
+  w.files.set('X/state/catnap/config.json', '{"softTokens": 250000, "autoTokens": 450000}')
+  w.pct = 32
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 32% of the window\. Compact at a comfortable moment before 40%/)
+  await clock.advance(1600)
+  expect(vars.get(AUTO)).toBe('45')
+})
+
+test('token lines: a switch to a 200K model moves them back to the percent lines at the next check', async ($, on) => {
+  const { w, clock, vars } = world(on, { ...M1, pct: 10 })
+  await start($)
+  await $.tool.call(read)
+  await clock.advance(1600)
+  expect(vars.get(AUTO)).toBe('50')
+  w.window = 200_000
+  w.pct = 35
+  expect((await $.tool.call(read)).context ?? []).toEqual([]) // 30% is no line on 200K
+  await clock.advance(1600)
+  expect(vars.get(AUTO)).toBe('70')
+  w.pct = 50
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 50% of the window\. Compact at a comfortable moment before 60%/)
+})
+
+test('token lines: the floor guard lifts the token lines like the percent ones', ENGINE_SUMMARY, async ($, on) => {
+  const { w, clock } = world(on, { ...M1, pct: 41 })
+  await start($)
+  await queueAndEnd($)
+  await clock.advance(1600)
+  expect(w.compacts.length).toBe(1)
+  w.pct = 25 // a heavy fixed part: 250K right after compacting
+  expect((await $.tool.call(read)).context ?? []).toEqual([])
+  await clock.advance(1600)
+  expect(w.toasts[0] ?? '').toMatch(/still at 25% right after compacting.*the next note waits for 35%/)
+  w.pct = 34
+  expect((await $.tool.call(read)).context ?? []).toEqual([])
+  w.pct = 35
+  expect((await $.tool.call(read)).context?.[0] ?? '').toMatch(/Context is at 35% of the window\. Compact at a comfortable moment before 40%/)
+  expect(floorMoves(w).map(e => [e.floor, e.soft, e.threshold])).toEqual([[25, 35, 40]])
+})
+
+test("token lines: auto_percent 0 still leaves Claude Code's own setting alone on 1M", { options: { auto_percent: 0 } }, async ($, on) => {
+  const { clock, vars } = world(on, { ...M1, pct: 30 }, { ...HOME, [AUTO]: '55' })
+  await start($)
+  await $.tool.call(read)
+  await turnEnd($, 't1')
+  await clock.advance(3200)
+  expect(vars.get(AUTO)).toBe('55')
+  expect(vars.has(ORIG)).toBe(false)
+})
+
+test('token lines: capped, fromOptions and parseConfig', () => {
+  const d = fromOptions(undefined).base
+  expect([d.softTokens, d.thresholdTokens, d.autoTokens]).toEqual([300_000, 400_000, 500_000])
+  const on1m = capped(d, 1_000_000)
+  expect([on1m.soft, on1m.threshold, on1m.auto]).toEqual([30, 40, 50])
+  const on200k = capped(d, 200_000)
+  expect([on200k.soft, on200k.threshold, on200k.auto]).toEqual([50, 60, 70])
+  expect(capped(d, undefined)).toEqual(d) // no window size: the percent lines
+  expect(capped(d, 0)).toEqual(d)
+  expect(capped({ ...d, softTokens: 333_333 }, 1_000_000).soft).toBe(33) // rounded down to whole percent
+  expect(capped({ ...d, softTokens: 1 }, 1_000_000).soft).toBe(1) // at least 1
+  expect(capped({ ...d, auto: 0 }, 1_000_000).auto).toBe(0) // 0 still means "leave it alone"
+  const o = fromOptions({ soft_tokens: '250000', strict_tokens: 0, auto_tokens: -5 } as never).base
+  expect([o.softTokens, o.thresholdTokens, o.autoTokens]).toEqual([250_000, 0, 500_000])
+  const c = parseConfig(['{"softTokens": 0, "thresholdTokens": "x", "autoTokens": 450000}'], d)
+  expect([c.softTokens, c.thresholdTokens, c.autoTokens]).toEqual([0, 400_000, 450_000])
+  expect(parseConfig(['{"softTokens": -1}']).softTokens).toBe(300_000)
 })

@@ -1,8 +1,8 @@
 {
   "name": "catnap",
   "displayName": "catnap",
-  "version": "0.3.10",
-  "description": "Claude compacts its own conversation at a clean break, then carries on by itself. A gentle note at 50% context, a strict one at 60%, Claude Code's auto-compact at 70% as the backstop, and a compact_now tool. All three lines are settings.",
+  "version": "0.3.11",
+  "description": "Claude compacts its own conversation at a clean break, then carries on by itself. A gentle note at 50% context or 300K tokens, whichever comes first, a strict one at 60% or 400K, Claude Code's auto-compact at 70% or 500K as the backstop, and a compact_now tool. All the lines are settings.",
   "author": { "name": "Martin Lipp", "url": "https://github.com/LippInc" },
   "homepage": "https://github.com/LippInc/catnap",
   "repository": "https://github.com/LippInc/catnap",
@@ -36,6 +36,30 @@
       "default": 70,
       "min": 0,
       "max": 99
+    },
+    "soft_tokens": {
+      "type": "number",
+      "title": "Soft line (tokens)",
+      "description": "The soft line in tokens: whichever of this and the percent line comes first counts. 300,000 by default, so on a 1M window the note comes at 300K; on a 200K window 50% comes first. 0 turns it off.",
+      "default": 300000,
+      "min": 0,
+      "max": 10000000
+    },
+    "strict_tokens": {
+      "type": "number",
+      "title": "Strict line (tokens)",
+      "description": "The strict line in tokens: whichever of this and the percent line comes first counts. 400,000 by default. 0 turns it off.",
+      "default": 400000,
+      "min": 0,
+      "max": 10000000
+    },
+    "auto_tokens": {
+      "type": "number",
+      "title": "Auto-compact line (tokens)",
+      "description": "The auto-compact line in tokens: whichever of this and the percent line comes first counts. 500,000 by default. 0 turns it off.",
+      "default": 500000,
+      "min": 0,
+      "max": 10000000
     },
     "save_step": {
       "type": "string",

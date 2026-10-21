@@ -13,6 +13,12 @@ import type { PluginOptions, Register, Timer } from 'claude-code'
 //   settings files, which stays as the fallback when the mod is off. 0 leaves Claude Code's own setting alone; off
 //   (config.json) or 0 puts back what the process had before the mod first set it (kept in CATNAP_AUTO_ORIG,
 //   so a reload still knows it). Only in a person's session, like the notes.
+// Each line also has a size in tokens (soft_tokens 300K, strict_tokens 400K, auto_tokens 500K by default; 0 = none),
+//   and whichever comes first counts: on a 200K window 50/60/70% (100K/120K/140K) as before, on 1M 300K/400K/500K
+//   (0.3.11). Why: what each call costs follows where the context is cut (2026-10-19 1M benchmark: cuts near 490K
+//   carried ~240K per call, near 147K ~92K, and the earlier cuts cost less in total), and how far a session runs past
+//   a line is the size of the piece it is finishing, in tokens, so the gaps between the lines stay 100K on 1M.
+//   A token line is turned into whole percent of the window (rounded down) at every check, so a model switch moves it.
 // "Save" is the save_step option when it is set (a command such as /save-before-compact, which writes a handoff file
 // whose path Claude passes to compact_now), else Claude passes its handoff to compact_now itself, as `note`: one call
 // instead of a file write plus the call. When a turn that called compact_now ends, this mod compacts the session and
@@ -58,8 +64,9 @@ import type { PluginOptions, Register, Timer } from 'claude-code'
 //   the lines is not asked to compact again and again. The auto line stays as set.
 //
 // State folder = <state>/catnap (NAME), <state> = CLAUDE_STATE_DIR, else ~/.claude/state.
-// Config: the userConfig options (soft_percent, strict_percent, auto_percent, save_step, fresh_start, handoff_summary),
-//   then config.json in the state folder ({"soft": 50, "threshold": 60, "auto": 70, "off": false, "fresh": false,
+// Config: the userConfig options (soft_percent, strict_percent, auto_percent, soft_tokens, strict_tokens, auto_tokens,
+//   save_step, fresh_start, handoff_summary), then config.json in the state folder ({"soft": 50, "threshold": 60,
+//   "auto": 70, "softTokens": 300000, "thresholdTokens": 400000, "autoTokens": 500000, "off": false, "fresh": false,
 //   "handoffSummary": true}, re-read on every check, no reload needed), then a
 //   per-session <session id>.config.json beside it; each later one wins. A soft line at or above the strict line is off;
 //   an auto line at or below the strict line gets one toast, since auto-compact then runs before the mod can ask.
@@ -89,6 +96,9 @@ export const toolNameFor = (plugin: string): string => `mcp__${plugin}__${TOOL}`
 const DEFAULT_SOFT = 50
 const DEFAULT_THRESHOLD = 60
 const DEFAULT_AUTO = 70
+const DEFAULT_SOFT_TOKENS = 300_000
+const DEFAULT_THRESHOLD_TOKENS = 400_000
+const DEFAULT_AUTO_TOKENS = 500_000
 const REMIND_STEP = 2 // percentage points between repeated mid-turn notes
 const ASK_STEP = 5 // percentage points before an ignored turn-end ask is repeated
 const TICK_MS = 1500 // how often the timer looks for deferred work
@@ -125,7 +135,28 @@ const PERSON_ORIGINS: ReadonlySet<string> = new Set(['composer', 'bridge', 'sdk'
 // alone is not one)
 export const asksToCompact = (text: string) => /\bcompact|\bnap\b/i.test(text)
 
-type Config = { soft: number; threshold: number; auto: number; off: boolean; fresh: boolean; handoffSummary: boolean }
+type Config = {
+  soft: number
+  threshold: number
+  auto: number
+  softTokens: number
+  thresholdTokens: number
+  autoTokens: number
+  off: boolean
+  fresh: boolean
+  handoffSummary: boolean
+}
+const DEFAULTS: Config = {
+  soft: DEFAULT_SOFT,
+  threshold: DEFAULT_THRESHOLD,
+  auto: DEFAULT_AUTO,
+  softTokens: DEFAULT_SOFT_TOKENS,
+  thresholdTokens: DEFAULT_THRESHOLD_TOKENS,
+  autoTokens: DEFAULT_AUTO_TOKENS,
+  off: false,
+  fresh: false,
+  handoffSummary: true,
+}
 // handoff: the file it is saved in ('' when there is none); note: the handoff text Claude passed itself ('' when it
 // passed a path only)
 type Job = { handoff: string; note: string; keep: string; percent: number }
@@ -141,12 +172,21 @@ const percentOption = (v: unknown, fallback: number, lowest = 1): number => {
   return Number.isFinite(n) && n >= lowest && n < 100 ? n : fallback
 }
 
+// A line in tokens: 0 (none) or more.
+const tokenOption = (v: unknown, fallback: number): number => {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN
+  return Number.isFinite(n) && n >= 0 ? n : fallback
+}
+
 // The userConfig options as the base config, and the save step (empty: a plain "write a handoff file").
 export const fromOptions = (options: PluginOptions | undefined): { base: Config; save: string } => ({
   base: {
     soft: percentOption(options?.soft_percent, DEFAULT_SOFT),
     threshold: percentOption(options?.strict_percent, DEFAULT_THRESHOLD),
     auto: percentOption(options?.auto_percent, DEFAULT_AUTO, 0),
+    softTokens: tokenOption(options?.soft_tokens, DEFAULT_SOFT_TOKENS),
+    thresholdTokens: tokenOption(options?.strict_tokens, DEFAULT_THRESHOLD_TOKENS),
+    autoTokens: tokenOption(options?.auto_tokens, DEFAULT_AUTO_TOKENS),
     off: false,
     fresh: options?.fresh_start === true,
     handoffSummary: options?.handoff_summary !== false,
@@ -155,18 +195,19 @@ export const fromOptions = (options: PluginOptions | undefined): { base: Config;
 })
 
 export const parseConfig = (texts: readonly (string | null)[], base?: Config): Config => {
-  const c: Config = base
-    ? { ...base }
-    : { soft: DEFAULT_SOFT, threshold: DEFAULT_THRESHOLD, auto: DEFAULT_AUTO, off: false, fresh: false, handoffSummary: true }
+  const c: Config = { ...(base ?? DEFAULTS) }
+  // a token line: 0 (none) or more
+  const tokens = (v: unknown, now: number): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : now)
   for (const text of texts) {
     if (!text) continue
     try {
-      const j = JSON.parse(text) as
-        | { soft?: unknown; threshold?: unknown; auto?: unknown; off?: unknown; fresh?: unknown; handoffSummary?: unknown }
-        | null
+      const j = JSON.parse(text) as Partial<Record<keyof Config, unknown>> | null
       if (typeof j?.soft === 'number' && j.soft > 0 && j.soft < 100) c.soft = j.soft
       if (typeof j?.threshold === 'number' && j.threshold > 0 && j.threshold < 100) c.threshold = j.threshold
       if (typeof j?.auto === 'number' && j.auto >= 0 && j.auto < 100) c.auto = j.auto
+      c.softTokens = tokens(j?.softTokens, c.softTokens)
+      c.thresholdTokens = tokens(j?.thresholdTokens, c.thresholdTokens)
+      c.autoTokens = tokens(j?.autoTokens, c.autoTokens)
       if (typeof j?.off === 'boolean') c.off = j.off
       if (typeof j?.fresh === 'boolean') c.fresh = j.fresh
       if (typeof j?.handoffSummary === 'boolean') c.handoffSummary = j.handoffSummary
@@ -175,6 +216,21 @@ export const parseConfig = (texts: readonly (string | null)[], base?: Config): C
     }
   }
   return c
+}
+
+// The lines on this window: each percent line, or its token line in whole percent (rounded down, at least 1) when
+// that comes first. A token line of 0 or no window size leaves the line as set; an auto line of 0 ("leave it alone")
+// stays 0, the lower of the two.
+export const capped = (c: Config, window: number | undefined): Config => {
+  if (!window || !Number.isFinite(window) || window <= 0) return c
+  const cap = (percent: number, tokens: number) =>
+    tokens > 0 ? Math.min(percent, Math.max(1, Math.floor((tokens * 100) / window))) : percent
+  return {
+    ...c,
+    soft: cap(c.soft, c.softTokens),
+    threshold: cap(c.threshold, c.thresholdTokens),
+    auto: cap(c.auto, c.autoTokens),
+  }
 }
 
 // What CLAUDE_AUTOCOMPACT_PCT_OVERRIDE should hold under this config: the auto line, or, when the mod is off or the
@@ -535,8 +591,14 @@ export const register: Register = (on, options) => {
     const surfaces = [...(await $.session.surfaces())]
     if (surfaces.length > 0 || desktopChat) logWorthy = true
     log('start', { surfaces, desktopChat, root: $.plugin.root, stateDir, isWrapperChild, autoNow: autoNow ?? null })
-    if (stateDir && (desktopChat || surfaces.length > 0))
-      wantAuto(parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base))
+    if (stateDir && (desktopChat || surfaces.length > 0)) {
+      // no window size yet: the percent line stands until the first check that has one
+      const window = await $.session.usage().then(
+        u => u.context.window,
+        () => undefined,
+      )
+      wantAuto(capped(parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base), window))
+    }
 
     const tick = async () => {
       if (busy) return
@@ -701,8 +763,9 @@ export const register: Register = (on, options) => {
     let early: { percent: number; line: number } | null = null
     try {
       if (!personAsked && stateDir && (desktopChat || (await $.session.surfaces()).length > 0)) {
-        const pct = (await $.session.usage()).context.percent
-        const c = parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base)
+        const ctx = (await $.session.usage()).context
+        const pct = ctx.percent
+        const c = capped(parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base), ctx.window)
         const l = lifted(c)
         const line = l.soft < l.threshold ? l.soft : l.threshold
         if (!c.off && pct !== undefined && pct < line) early = { percent: pct, line }
@@ -801,10 +864,11 @@ export const register: Register = (on, options) => {
     if (e.tool === toolName || e.agentId || r.deny !== undefined) return r
     if (pending) return { ...r, context: [...(r.context ?? []), QUEUED_NOTE] }
     if (!stateDir || (!desktopChat && (await $.session.surfaces()).length === 0)) return r
-    const pct = (await $.session.usage()).context.percent
+    const ctx = (await $.session.usage()).context
+    const pct = ctx.percent
     sawPercent(pct) // before the give-up check: a compaction seen this way also ends a give-up
     if (gaveUp) return r
-    const c = parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base)
+    const c = capped(parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base), ctx.window)
     wantAuto(c)
     if (c.off) return r
     if (pct === undefined) return r
@@ -839,10 +903,11 @@ export const register: Register = (on, options) => {
       return r
     }
     if (!stateDir || (!desktopChat && (await $.session.surfaces()).length === 0)) return r
-    const pct = (await $.session.usage()).context.percent
+    const ctx = (await $.session.usage()).context
+    const pct = ctx.percent
     sawPercent(pct) // an auto-compact inside the turn shows here at the latest
     if (gaveUp || e.reason !== 'answer') return r
-    const c = parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base)
+    const c = capped(parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base), ctx.window)
     wantAuto(c)
     if (c.off || pct === undefined) return r
     const l = lifted(c)
