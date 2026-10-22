@@ -16,6 +16,7 @@ import {
   keepSaid,
   keepSkills,
   parseConfig,
+  proseHandoff,
   skillsIn,
 } from './register'
 
@@ -39,6 +40,10 @@ type World = {
   commandMode: 'done' | 'hold' | 'refuse' // a command finishes at once, waits for release(), or is refused
   toasts: string[]
   descriptions: string[] // every registered tool's description
+  preCompacts: (string | undefined)[] // every compaction that ran the person's PreCompact hooks (core's), by trigger
+  reached: { trigger?: string; instructions?: string; n: number }[] // every session.compact that reached the engine
+  preCompactBlock: string | null // a PreCompact hook blocks: core answers with this skip, word for word
+  oneSummarized: boolean // an engine that summarizes a one-message transcript instead of refusing it
 }
 
 // Everything beneath the plugin: the engine's answers, held in memory.
@@ -58,6 +63,10 @@ const world = (on: On, init: Partial<World> = {}, fixture: Record<string, string
     commandMode: 'done',
     toasts: [],
     descriptions: [],
+    preCompacts: [],
+    reached: [],
+    preCompactBlock: null,
+    oneSummarized: false,
     ...init,
   }
   const clock = mock.clock(on)
@@ -105,6 +114,7 @@ const world = (on: On, init: Partial<World> = {}, fixture: Record<string, string
   })
   on('session.compact', ($, e) => {
     w.triggers.push(e.trigger)
+    w.reached.push({ trigger: e.trigger, instructions: e.instructions, n: e.messages?.length ?? 0 })
     // a plugin's own call reaches the test's bottom with no trigger
     if (w.headless && (e.trigger === undefined || e.trigger === 'plugin')) {
       // the live 2026-10-13 refusal, word for word
@@ -116,6 +126,11 @@ const world = (on: On, init: Partial<World> = {}, fixture: Record<string, string
       w.compactFailures -= 1
       throw new Error('a turn is running')
     }
+    // core, as probed live on 2.1.304 (2026-10-22): the person's PreCompact hooks run first, a blocking one answers
+    // with a skip, and a transcript of one message is refused after them, with no model call
+    w.preCompacts.push(e.trigger)
+    if (w.preCompactBlock !== null) return { skip: w.preCompactBlock }
+    if ((e.messages?.length ?? 2) < 2 && !w.oneSummarized) throw new Error('Not enough messages to compact.')
     w.compacts.push(e.instructions)
     return { messages: [{ role: 'user' as const, text: 'summary', toolUses: [] }], tokensBefore: 640_000, tokensAfter: 40_000 }
   })
@@ -422,7 +437,10 @@ test('CLAUDE_STATE_DIR moves the state folder, as it does for the settings hooks
   expect([...w.files.keys()].map(slash)).toContain('D:/st/catnap/sess-1.json')
 })
 
-const MSGS = [{ role: 'user' as const, text: 'summary', toolUses: [] }]
+const MSGS = [
+  { role: 'user' as const, text: 'summary', toolUses: [] },
+  { role: 'assistant' as const, text: 'ok', toolUses: [] },
+]
 
 const turnEnd = ($: Engine, turnId: string) =>
   $.turn.complete({ reason: 'answer', isAborted: false, turnId, answer: 'ok', durationMs: 1 })
@@ -744,6 +762,8 @@ type LogEvent = {
   percent?: number
   line?: number
   own?: boolean
+  outcome?: string
+  reason?: string
 }
 const logOf = (w: World): LogEvent[] =>
   JSON.parse([...w.files].find(([p]) => /sess-1\.log\.json$/.test(slash(p)))?.[1] ?? '[]') as LogEvent[]
@@ -1442,7 +1462,7 @@ test("handoff summary (the default): catnap's /compact is answered with the hand
   expect(w.commands.length).toBe(1)
   expect(w.commands[0] ?? '').toMatch(/^\/compact Keep what the next turn needs to continue: k\./)
   const r = await engineCompacts($)
-  expect(w.triggers).toEqual([]) // the engine's compaction never ran
+  expect(w.triggers).toEqual(['manual']) // only the stand-in reached the engine (the PreCompact hooks, 0.3.12)
   expect(w.compacts).toEqual([])
   expect(r.messages?.length).toBe(1)
   expect(r.messages?.[0]?.role).toBe('user')
@@ -1531,7 +1551,8 @@ test("handoff summary: a save step's handoff file stands in the summary's place,
   expect(text).toContain(
     'here is the handoff you wrote just before it (saved in C:/p/.claude/handoffs/x.md):\n\n<handoff>\nRESUME - the mod build\nNext: step 3 of the plan\n</handoff>',
   )
-  expect(w.triggers).toEqual([])
+  expect(w.triggers).toEqual(['manual']) // the stand-in only
+  expect(w.compacts).toEqual([])
   await clock.advance(1600)
   release()
   await clock.advance(1600)
@@ -1549,6 +1570,120 @@ test('handoff summary: a handoff file that cannot be read leaves the compaction 
   await clock.advance(1600)
   expect(w.prompts.length).toBe(1)
   expect(w.prompts[0] ?? '').toMatch(/Your handoff: C:\/p\/\.claude\/handoffs\/gone\.md\. Read it first/)
+})
+
+// 0.3.12: a nap runs the person's PreCompact hooks (a transcript backup, say). Core runs them beneath next(), so while
+// catnap answered its own /compact with the handoff and never called next(), every nap skipped them. catnap now hands
+// core a one-message stand-in first: the hooks run, core refuses one message with no model call, and the handoff stands.
+const preCompactLog = (w: World) => logOf(w).filter(e => e.kind === 'pre-compact').map(e => e.outcome)
+
+test("handoff summary: a nap runs the person's PreCompact hooks once, with no summary, and the handoff still stands", async ($, on) => {
+  const { w, clock, release } = world(on, { pct: 64, commandMode: 'hold' })
+  await start($)
+  await ownNap($, w, clock, 'Next: T08.')
+  const r = await engineCompacts($)
+  expect(w.preCompacts).toEqual(['manual'])
+  expect(w.compacts).toEqual([]) // the summarizer never ran
+  expect(r.skip).toBeUndefined()
+  expect(r.messages?.length).toBe(1)
+  expect(r.messages?.[0]?.text ?? '').toContain('<handoff>\nNext: T08.\n</handoff>')
+  await clock.advance(1600)
+  expect(w.prompts).toEqual([OWN_CONTINUE])
+  release()
+  await clock.advance(3200)
+  expect(w.prompts).toEqual([OWN_CONTINUE])
+  expect(preCompactLog(w)).toEqual(['ran'])
+  expect(w.toasts).toEqual([])
+})
+
+test('handoff summary: a PreCompact hook that blocks the nap is honoured: no handoff, the skip as core wrote it, no continue prompt', async ($, on) => {
+  const block = 'Compaction blocked by PreCompact hook: [./backup.sh]: disk full'
+  const { w, clock, release } = world(on, { pct: 64, commandMode: 'hold', preCompactBlock: block })
+  await start($)
+  await ownNap($, w, clock, 'Next: T08.')
+  const r = await engineCompacts($)
+  expect(r.skip).toBe(block)
+  expect(r.messages).toBeUndefined()
+  expect(w.preCompacts).toEqual(['manual'])
+  expect(w.compacts).toEqual([])
+  release() // the /compact finishes after its compaction was skipped: nothing lands
+  await clock.advance(3200)
+  expect(w.prompts).toEqual([])
+  expect(w.toasts.join('\n')).toContain(`the compaction was skipped (${block})`)
+  expect(logOf(w).filter(e => e.kind === 'skipped').map(e => [e.via, e.reason])).toEqual([['prompt', block]])
+  expect(logOf(w).some(e => e.kind === 'compacted')).toBe(false)
+  expect(preCompactLog(w)).toEqual(['blocked'])
+  // once the hook lets compactions through, the next nap lands as usual
+  w.preCompactBlock = null
+  await ownNap($, w, clock, 'Next: T09.', 't2')
+  expect((await engineCompacts($)).messages?.[0]?.text ?? '').toContain('<handoff>\nNext: T09.\n</handoff>')
+  await clock.advance(1600)
+  expect(w.prompts).toEqual([OWN_CONTINUE])
+})
+
+test('handoff summary: an engine that summarizes the one-message stand-in: its summary is dropped and the handoff stands', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, commandMode: 'hold', oneSummarized: true })
+  await start($)
+  await ownNap($, w, clock, 'Next: T08.')
+  const r = await engineCompacts($)
+  expect(w.preCompacts).toEqual(['manual'])
+  expect(w.compacts.length).toBe(1) // one small model call, and it shows in the log
+  expect(r.messages?.length).toBe(1)
+  expect(r.messages?.[0]?.text ?? '').toContain('<handoff>\nNext: T08.\n</handoff>')
+  expect(r.messages?.[0]?.text ?? '').not.toBe('summary')
+  await clock.advance(1600)
+  expect(w.prompts).toEqual([OWN_CONTINUE])
+  expect(preCompactLog(w)).toEqual(['summarized'])
+})
+
+test('handoff summary: the stand-in carries the /compact instructions and one message, whatever the conversation held', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, commandMode: 'hold' })
+  await start($)
+  await ownNap($, w, clock, 'Next: T08.')
+  await engineCompacts($, { instructions: 'Keep the parser work.' })
+  expect(w.reached).toEqual([{ trigger: 'manual', instructions: 'Keep the parser work.', n: 1 }])
+})
+
+// 0.3.12: a model that puts the handoff itself in the handoff field (a path field): live, Haiku 5.5 did it in 2 of 6
+// naps on 2026-10-22, and the nap then went to the engine's summary with a continue prompt asking to read a "file"
+// named by the text. Text that cannot be read and does not look like a file path goes as the note.
+test('handoff summary: the handoff written into the handoff field (not a path) goes as the note, in place of the summary', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, commandMode: 'hold' })
+  await start($)
+  const text = 'Task so far: the user asked me to remember the code word PELICAN-7. Next: wait for the next message.'
+  await $.tool.call({ tool: TOOL, handoff: text, keep: 'k' } as never)
+  await turnEnd($, 't1')
+  await clock.advance(1600)
+  const r = await engineCompacts($)
+  expect(r.messages?.[0]?.text ?? '').toContain(`<handoff>\n${text}\n</handoff>`)
+  expect(w.compacts).toEqual([])
+  await clock.advance(1600)
+  expect(w.prompts).toEqual([OWN_CONTINUE])
+  expect(logOf(w).some(e => e.kind === 'compacted' && e.own === true)).toBe(true) // the log is written on the timer
+})
+
+test('handoff summary: a readable file in the handoff field is read as a file, whatever its name', async ($, on) => {
+  const { w, clock } = world(on, { pct: 64, commandMode: 'hold' })
+  w.files.set('C:/p/HANDOFF', 'Next: T08.\n')
+  await start($)
+  await $.tool.call({ tool: TOOL, handoff: 'C:/p/HANDOFF', keep: 'k' } as never)
+  await turnEnd($, 't1')
+  await clock.advance(1600)
+  const text = (await engineCompacts($)).messages?.[0]?.text ?? ''
+  expect(text).toContain('(saved in C:/p/HANDOFF):\n\n<handoff>\nNext: T08.\n</handoff>')
+})
+
+test('a path in the handoff field stays a path: a readable file of any name, and an unreadable one that looks like a path', () => {
+  expect(proseHandoff('Task so far: the parser. Next: T08.')).toBe(true)
+  expect(proseHandoff('Next: T08.\nOpen: none')).toBe(true) // more than one line
+  expect(proseHandoff('notes.md\nplan.md')).toBe(true) // two lines, each like a file name
+  expect(proseHandoff('All done, nothing next')).toBe(true) // short, no file extension
+  expect(proseHandoff('done; next is the handoff in register.ts and the tests in catnap.test.ts')).toBe(true) // many words
+  expect(proseHandoff('x'.repeat(401) + '.md')).toBe(true)
+  expect(proseHandoff('C:/p/.claude/handoffs/x.md')).toBe(false)
+  expect(proseHandoff('C:\\Users\\John Smith\\My Notes\\handoff.md')).toBe(false)
+  expect(proseHandoff('.claude/handoffs/catnap-precompact.md')).toBe(false)
+  expect(proseHandoff('RESUME.md')).toBe(false)
 })
 
 test("handoff summary: the person's prompts kept are the newest, each cut, up to the cap; the option and config key", () => {

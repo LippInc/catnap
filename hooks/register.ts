@@ -1,4 +1,4 @@
-import type { PluginOptions, Register, Timer } from 'claude-code'
+import type { PluginOptions, Register, SessionCompactResult, Timer } from 'claude-code'
 
 // catnap (formerly compact-when-ready): Claude compacts its own conversation at a clean break, then carries on by itself.
 // Two lines on the context window:
@@ -58,7 +58,12 @@ import type { PluginOptions, Register, Timer } from 'claude-code'
 //   continue prompt then only says the handoff is above. With it on catnap always compacts through /compact, which its
 //   hook sees (its own $.session.compact skips its hooks); only that compaction, in the main loop, and only when the
 //   handoff can be read; anything else goes to the engine, and where the hook is held back the engine's summary stands
-//   as before.
+//   as before. The person's PreCompact hooks (settings hooks; a transcript backup, say) run inside the engine, beneath
+//   next(), so before answering, the hook hands the engine the same compaction with one stand-in message (STAND_IN):
+//   the PreCompact hooks run on it, then the engine refuses one message ("Not enough messages to compact.") with no
+//   model call (live 2.1.304, 2026-10-22). A PreCompact hook that blocks is honoured: its skip is the answer, and no
+//   handoff lands. An engine that summarizes the stand-in instead costs one small model call, logged; its summary is
+//   dropped. Before 0.3.12 a nap skipped those hooks.
 // After any compaction the first percent seen is the floor: for that cycle both lines sit at least FLOOR_GAIN points
 //   above it (logged once a cycle, one toast a session when that moves a line), so a session whose fixed part is near
 //   the lines is not asked to compact again and again. The auto line stays as set.
@@ -379,6 +384,10 @@ export const ownSummaryText = (
   )
 }
 
+// handoff_summary: the one message the engine gets in place of the conversation, so the person's PreCompact hooks run
+// on catnap's compaction (see the header); never summarized, and dropped if an engine does
+const STAND_IN = '[catnap] This compaction is answered with the handoff; this message stands in for the conversation.'
+
 // handoff_summary: the continue prompt, when the handoff already stands in the summary's place
 export const ownContinueText = (job: Job) =>
   `[${NAME}] The conversation was just compacted at your request (context had reached ${job.percent}%). Your handoff is above, in place of a summary. ${CARRY_ON}`
@@ -390,6 +399,12 @@ const instructionsFor = (job: Job) =>
 
 // The handoff to give back after the compaction: the note, else the file, cut at PASTE_MAX; null when there is no
 // note and the file can't be read. A note is cut only when a file holds the whole of it.
+// compact_now: a handoff field that holds the handoff itself, not a path (a model put its text there; live, Haiku 5.5
+// in 2 of 6 naps, 2026-10-22): more than one line, over 400 characters, six words or more, or no file extension at the
+// end. Only used when the field cannot be read as a file.
+export const proseHandoff = (s: string) =>
+  /[\r\n]/.test(s) || s.length > 400 || s.split(/\s+/).length >= 6 || !/\.[A-Za-z0-9]{1,10}$/.test(s)
+
 export const handoffText = async (job: Job, read: (path: string) => Promise<string | null | undefined>) => {
   let text = job.note
   if (!text) {
@@ -778,7 +793,7 @@ export const register: Register = (on, options) => {
       return { deny: earlyText(early.percent, early.line, toolName) }
     }
     const input = e as unknown as { note?: unknown; handoff?: unknown; keep?: unknown }
-    const note = String(input.note ?? '').trim()
+    let note = String(input.note ?? '').trim()
     let handoff = String(input.handoff ?? '').trim()
     const keep = String(input.keep ?? '').trim()
     if (!note && !handoff)
@@ -787,6 +802,11 @@ export const register: Register = (on, options) => {
           ? `Save everything first (run ${save}), then call again with the handoff file's path as handoff.`
           : `Write your handoff first and pass it as note (${HANDOFF_PARTS}), then call again.`,
       }
+    if (!note && proseHandoff(handoff) && (await $.fs.read(handoff).catch(() => null)) == null) {
+      // the handoff itself, written into the path field: it goes as the note
+      note = handoff
+      handoff = ''
+    }
     if (note && !handoff && stateDir) {
       // a copy on disk: for a person to look at, and for the continue prompt to point at if the note is cut
       const path = `${stateDir}/${sid}.handoff.md`
@@ -927,6 +947,22 @@ export const register: Register = (on, options) => {
     if (ours && parseConfig(await Promise.all(configPaths().map(p => $.fs.read(p).catch(() => null))), base).handoffSummary) {
       const back = await handoffText(ours, path => $.fs.read(path))
       if (back.text !== null) {
+        // the person's PreCompact hooks run beneath next(): hand it the stand-in, and stop if one of them blocks
+        let pre: SessionCompactResult | null = null
+        try {
+          pre = await next({ ...e, messages: [{ role: 'user' as const, text: STAND_IN, toolUses: [] }] })
+        } catch (err) {
+          log('pre-compact', { outcome: 'ran', note: String(err).slice(0, 160) }) // "Not enough messages to compact."
+        }
+        if (pre && 'skip' in pre && pre.skip !== undefined) {
+          const reason = String(pre.skip)
+          reset()
+          log('pre-compact', { outcome: 'blocked' })
+          log('skipped', { via: 'prompt', reason })
+          $.ui.toast(`the compaction was skipped (${reason})`)
+          return pre
+        }
+        if (pre) log('pre-compact', { outcome: 'summarized', tokensAfter: pre.tokensAfter }) // dropped: the handoff stands
         const text = ownSummaryText(ours, back.text, back.cut, said, keepSkills(skillTexts, skillsIn(e.messages)))
         reset()
         landedJob = ours

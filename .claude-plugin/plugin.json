@@ -1,7 +1,7 @@
 {
   "name": "catnap",
   "displayName": "catnap",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "Claude compacts its own conversation at a clean break, then carries on by itself. A gentle note at 50% context or 300K tokens, whichever comes first, a strict one at 60% or 400K, Claude Code's auto-compact at 70% or 500K as the backstop, and a compact_now tool. All the lines are settings.",
   "author": { "name": "Martin Lipp", "url": "https://github.com/LippInc" },
   "homepage": "https://github.com/LippInc/catnap",
